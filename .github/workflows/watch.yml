@@ -1,0 +1,72 @@
+name: Price Watch
+
+on:
+  schedule:
+    # Every 6 hours, 5 minutes past the hour (UTC)
+    - cron: "5 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout data branch
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync --extra tracker
+
+      - name: Update alert URLs from secret
+        env:
+          NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
+          FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
+        run: |
+          uv run python -c "
+          import os
+          from fli.tracker.db import TrackerDB
+          db = TrackerDB()
+          alerts = db.list_alerts(active_only=False)
+          notify_url = os.environ['NOTIFY_URL']
+          for alert in alerts:
+              db._conn.execute('UPDATE alerts SET notify_url = ? WHERE id = ?', (notify_url, alert.id))
+          db._conn.commit()
+          print(f'Updated {len(alerts)} alert URLs')
+          db.close()
+          "
+
+      - name: Run sweep
+        env:
+          FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
+        run: uv run fli watch --verbose
+
+      - name: Push updated DB
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tracker.db
+          if git diff --cached --quiet; then
+            echo "No DB changes to commit"
+          else
+            git commit -m "Update price data $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi

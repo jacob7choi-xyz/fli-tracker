@@ -4,13 +4,14 @@ Manages the database schema, route CRUD, price snapshot storage,
 alert configuration, and notification logging.
 """
 
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from fli.tracker.models import Alert, AlertType, NotificationRecord, PriceSnapshot, Route
 
-DEFAULT_DB_PATH = Path.home() / ".fli" / "tracker.db"
+DEFAULT_DB_PATH = Path(os.environ.get("FLI_DB_PATH", Path.home() / ".fli" / "tracker.db"))
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS routes (
