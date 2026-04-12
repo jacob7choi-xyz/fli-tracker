@@ -56,7 +56,7 @@ def track_add(
     look_ahead: Annotated[
         int,
         typer.Option("--look-ahead", "-l", help="Days ahead to scan"),
-    ] = 90,
+    ] = 45,
     one_way: Annotated[
         bool,
         typer.Option("--one-way", help="Track as one-way (default is round-trip)"),
