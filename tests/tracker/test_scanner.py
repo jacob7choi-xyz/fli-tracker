@@ -341,6 +341,47 @@ class TestSweep:
         assert mock_scan.call_count == 2
 
     @patch("fli.tracker.scanner.scan_route")
+    def test_sweep_filters_by_group(self, mock_scan, db: TrackerDB):
+        """When group is specified, only matching routes are scanned."""
+        db.add_route(Route(origin="DFW", destination="ORD"))   # domestic
+        db.add_route(Route(origin="DFW", destination="FCO"))   # longhaul
+
+        mock_scan.return_value = [
+            PriceSnapshot(route_id=1, departure_date="2026-07-15", price=100.0, currency="USD")
+        ]
+
+        sweep(db, group="domestic")
+        assert mock_scan.call_count == 1
+        scanned_route = mock_scan.call_args[0][0]
+        assert scanned_route.destination == "ORD"
+
+    @patch("fli.tracker.scanner.scan_route")
+    def test_sweep_longhaul_group(self, mock_scan, db: TrackerDB):
+        """Longhaul group scans only international routes."""
+        db.add_route(Route(origin="DFW", destination="ORD"))   # domestic
+        db.add_route(Route(origin="DFW", destination="FCO"))   # longhaul
+
+        mock_scan.return_value = [
+            PriceSnapshot(route_id=1, departure_date="2026-07-15", price=500.0, currency="USD")
+        ]
+
+        sweep(db, group="longhaul")
+        assert mock_scan.call_count == 1
+        scanned_route = mock_scan.call_args[0][0]
+        assert scanned_route.destination == "FCO"
+
+    @patch("fli.tracker.scanner.scan_route")
+    def test_sweep_no_group_scans_all(self, mock_scan, db: TrackerDB):
+        """Without group filter, all active routes are scanned."""
+        db.add_route(Route(origin="DFW", destination="ORD"))
+        db.add_route(Route(origin="DFW", destination="FCO"))
+
+        mock_scan.return_value = []
+
+        sweep(db, group=None)
+        assert mock_scan.call_count == 2
+
+    @patch("fli.tracker.scanner.scan_route")
     def test_sweep_continues_on_scan_exception(self, mock_scan, db: TrackerDB):
         """If scan_route raises an exception, sweep catches it and continues."""
         route1 = db.add_route(Route(origin="DFW", destination="FCO"))

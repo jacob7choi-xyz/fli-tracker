@@ -41,21 +41,14 @@ _MIN_DECILE_SAMPLES = 20
 # Peak travel months (higher scores for cheap fares in expensive seasons)
 _PEAK_MONTHS = {6, 7, 8, 12}
 
-_DOMESTIC_COUNTRIES = {"US", "Puerto Rico"}
+def _load_airport_locations() -> dict[str, str]:
+    """Load airport city/location labels from data/airport_locations.csv.
 
-
-def _load_airport_data() -> tuple[dict[str, str], dict[str, str]]:
-    """Load airport metadata from data/airport_locations.csv.
-
-    Returns:
-        A tuple of (locations, countries) where:
-        - locations maps IATA code to display label ("Dallas-Fort Worth, TX")
-        - countries maps IATA code to country string ("US", "Japan", etc.)
-
+    Returns a dict mapping IATA code to a display label like
+    "Dallas-Fort Worth, TX" (domestic) or "Rome, Italy" (international).
     """
     csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "airport_locations.csv"
     locations: dict[str, str] = {}
-    countries: dict[str, str] = {}
     try:
         with open(csv_path) as f:
             import csv
@@ -66,8 +59,6 @@ def _load_airport_data() -> tuple[dict[str, str], dict[str, str]]:
                 city = row["city"].strip()
                 region = row.get("region", "").strip()
                 country = row.get("country", "").strip()
-                if country:
-                    countries[code] = country
                 if country == "US" and region:
                     locations[code] = f"{city}, {region}"
                 elif country:
@@ -76,17 +67,28 @@ def _load_airport_data() -> tuple[dict[str, str], dict[str, str]]:
                     locations[code] = city
     except FileNotFoundError:
         logger.warning("Airport locations file not found: %s", csv_path)
-    return locations, countries
+    return locations
 
 
-_AIRPORT_LOCATIONS, _AIRPORT_COUNTRIES = _load_airport_data()
+_AIRPORT_LOCATIONS: dict[str, str] = _load_airport_locations()
+
+# Re-export country data from regions module
+from fli.tracker.regions import _AIRPORT_COUNTRIES  # noqa: E402
+
+# US/Puerto Rico only -- for email digest section headers
+_US_COUNTRIES = {"US", "Puerto Rico"}
 
 
 def _is_domestic_route(origin: str, destination: str) -> bool:
-    """Check if both airports are in the US or Puerto Rico."""
+    """Check if both airports are in the US or Puerto Rico.
+
+    This is for email digest sectioning only. The workflow route
+    grouping in regions.py uses a broader definition that includes
+    Mexico, Caribbean, Central America, and Canada.
+    """
     orig_country = _AIRPORT_COUNTRIES.get(origin, "")
     dest_country = _AIRPORT_COUNTRIES.get(destination, "")
-    return orig_country in _DOMESTIC_COUNTRIES and dest_country in _DOMESTIC_COUNTRIES
+    return orig_country in _US_COUNTRIES and dest_country in _US_COUNTRIES
 
 
 def _format_route_label(origin: str, destination: str) -> str:

@@ -29,7 +29,7 @@ class Route(BaseModel):
     cabin_class: str = "ECONOMY"
     max_stops: str = "ANY"
     durations: Annotated[list[PositiveInt], MinLen(1)] = [7]
-    look_ahead: PositiveInt = 90
+    look_ahead: PositiveInt = 45
     is_round_trip: bool = True
     max_price: NonNegativeFloat | None = None
     created_at: datetime | None = None

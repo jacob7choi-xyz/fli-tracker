@@ -1,9 +1,9 @@
-name: Price Watch
+name: Price Watch (Long-haul)
 
 on:
   schedule:
-    # Every 6 hours, 5 minutes past the hour (UTC)
-    - cron: "5 */6 * * *"
+    # Every 6 hours starting at 1am UTC (offset from domestic)
+    - cron: "0 1,7,13,19 * * *"
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -61,10 +61,10 @@ jobs:
           db.close()
           "
 
-      - name: Run sweep
+      - name: Run long-haul sweep
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
-        run: uv run fli watch --verbose
+        run: uv run fli watch --group longhaul --verbose
 
       - name: Push updated DB
         working-directory: data
@@ -75,7 +75,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No DB changes to commit"
           else
-            git commit -m "Update price data $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "Update long-haul prices $(date -u +'%Y-%m-%d %H:%M UTC')"
             if ! git push; then
               echo "::error::Failed to push updated DB to data branch"
               exit 1

@@ -16,6 +16,7 @@ from fli.models.google_flights.base import MaxStops, SeatType
 from fli.search import SearchDates
 from fli.tracker.db import TrackerDB
 from fli.tracker.models import PriceSnapshot, Route
+from fli.tracker.regions import RouteGroup, route_group
 
 logger = logging.getLogger(__name__)
 
@@ -140,17 +141,24 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
     return all_snapshots
 
 
-def sweep(db: TrackerDB) -> int:
-    """Scan all active routes and store price snapshots.
+def sweep(db: TrackerDB, group: RouteGroup | None = None) -> int:
+    """Scan active routes and store price snapshots.
 
     Args:
         db: The tracker database to read routes from and write snapshots to.
+        group: Optional route group filter ('domestic' or 'longhaul').
+            When None, scans all active routes.
 
     Returns:
         Total number of price snapshots stored across all routes.
 
     """
     routes = db.list_routes(active_only=True)
+    if group is not None:
+        routes = [
+            r for r in routes
+            if route_group(r.origin, r.destination) == group
+        ]
     if not routes:
         logger.info("No active routes to scan")
         return 0

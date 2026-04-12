@@ -8,6 +8,7 @@ import typer
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
 from fli.tracker.notifier import send_digest
+from fli.tracker.regions import RouteGroup, route_group
 from fli.tracker.scanner import scan_route
 
 
@@ -16,20 +17,30 @@ def watch(
         int | None,
         typer.Option("--route", "-r", help="Scan a specific route ID only"),
     ] = None,
+    group: Annotated[
+        str | None,
+        typer.Option("--group", "-g", help="Route group: 'domestic' or 'longhaul'"),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Show detailed output"),
     ] = False,
 ):
-    """Run a single price sweep of all active routes.
+    """Run a single price sweep of active routes.
 
-    Scans each active tracked route, stores price snapshots,
-    checks alerts, and sends a single digest notification
-    for all triggers.
+    Scans tracked routes, stores price snapshots, checks alerts,
+    and sends a single digest notification for all triggers.
 
-    For recurring sweeps, use cron:
-        */6 * * * * fli watch
+    Use --group to scan a subset of routes:
+        fli watch --group domestic
+        fli watch --group longhaul
     """
+    if group is not None and group not in ("domestic", "longhaul"):
+        typer.echo(f"Invalid group '{group}'. Use 'domestic' or 'longhaul'.")
+        raise typer.Exit(1)
+
+    group_filter: RouteGroup | None = group  # type: ignore[assignment]
+
     if verbose:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -67,14 +78,21 @@ def watch(
                 typer.echo("No results found")
         else:
             routes = db.list_routes(active_only=True)
+            if group_filter is not None:
+                routes = [
+                    r for r in routes
+                    if route_group(r.origin, r.destination) == group_filter
+                ]
             if not routes:
+                label = f" in group '{group_filter}'" if group_filter else ""
                 typer.echo(
-                    "No active routes to scan."
+                    f"No active routes to scan{label}."
                     " Add one with: fli track add <origin> <dest>"
                 )
                 raise typer.Exit()
 
-            typer.echo(f"Scanning {len(routes)} active route(s)...")
+            group_label = f" ({group_filter})" if group_filter else ""
+            typer.echo(f"Scanning {len(routes)} active route(s){group_label}...")
             total_snapshots = 0
             all_triggers = []
 

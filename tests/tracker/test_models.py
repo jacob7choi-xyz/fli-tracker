@@ -13,7 +13,7 @@ class TestRoute:
         assert route.max_stops == "ANY"
         assert route.durations == [7]
         assert route.trip_duration == 7  # backward compat property
-        assert route.look_ahead == 90
+        assert route.look_ahead == 45
         assert route.is_round_trip is True
         assert route.max_price is None
         assert route.active is True

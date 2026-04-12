@@ -24,6 +24,9 @@ class Client:
         "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
     }
 
+    # Request timeout in seconds (connect + read)
+    DEFAULT_TIMEOUT = 30
+
     def __init__(self):
         """Initialize a new client session with default headers."""
         self._client = requests.Session()
@@ -52,6 +55,7 @@ class Client:
 
         """
         try:
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             response = self._client.get(url, **kwargs)
             response.raise_for_status()
             return response
@@ -76,6 +80,7 @@ class Client:
 
         """
         try:
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             response = self._client.post(url, **kwargs)
             response.raise_for_status()
             return response
