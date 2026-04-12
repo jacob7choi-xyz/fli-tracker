@@ -144,3 +144,144 @@ Find cheapest travel dates within a range.
 - Date search finds cheapest flights within flexible date ranges
 - MCP server uses industry-standard naming: `origin`/`destination`, `cabin_class`, `max_stops`
 - Core utilities ensure consistent parsing between CLI and MCP interfaces
+
+---
+
+## Instruction Precedence
+
+When instructions conflict, follow this order:
+
+1. **"Plan first"** -- show plan, wait for approval before any code
+2. **"Fix it"** -- minimal safe fix, but still:
+   - Write a failing test first (for bugs)
+   - If touching >1 file, show 3-bullet plan first
+3. **When in doubt** -- ask, do not guess
+
+## Working Style
+
+### Plan Before Execute
+- Before any multi-file change, show the plan first
+- Do not write code until the approach is approved
+- If something goes sideways, STOP. Go back to plan mode and re-plan
+
+### Prove Your Work
+- After completing a task, run tests to verify
+- When asked to "prove it works", diff behavior and show evidence
+- Commit after each completed phase with descriptive messages
+
+### When Stuck
+- Do not spin for more than 2 attempts on the same approach
+- Ask for clarification instead of guessing
+- Suggest 2-3 alternatives and let the user pick
+
+### Teach, Don't Just Do
+- Prioritize teaching over speed; explain the why behind changes
+- When changes are accepted without questioning, push back and ask if the
+  tradeoff is understood
+- Resist vibe coding; if the user is rubber-stamping, slow down
+
+### Use Subagents
+- For complex refactors or exploration, use subagents to parallelize
+- Keep main context clean; offload individual tasks to subagents
+
+## Prompting Patterns
+
+| When I say... | Do this |
+|---------------|---------|
+| "Plan first" | Show detailed plan, wait for approval |
+| "Grill me on these changes" | Review critically, block until concerns addressed |
+| "Prove it works" | Diff behavior, run tests, show evidence |
+| "Now do it elegantly" | Scrap the quick fix, implement the clean solution |
+| "Use subagents" | Parallelize with multiple agents |
+| "Fix it" | Just fix it (but follow precedence rules above) |
+
+## Bug Workflow
+
+When a bug is reported:
+
+1. **DON'T** start by trying to fix it
+2. First, write a test that reproduces the bug
+3. Then fix it
+4. Prove the fix with a passing test
+
+## Mistake Learning
+
+After every correction:
+- Ask: "What rule would have prevented this?"
+- Add that rule to the Learned Rules section of this file
+- Goal: mistake rate drops over time as CLAUDE.md improves
+
+## Flight Search Output Standards
+
+- **Always show full details.** When searching for flights, always include:
+  departure date, return date, departure time, arrival time, duration, number
+  of stops, airline, plane type, and price. Never show just price and
+  destination.
+- **Sweep with subagents by week per month.** When searching for cheapest
+  flights, use subagents to parallelize the search. Each subagent handles
+  one month, sweeping week-by-week intervals (e.g., 1st-8th, 8th-15th,
+  15th-22nd, 22nd-29th). Run multiple month-agents in parallel. Each agent
+  returns the cheapest result per destination for its month. The main
+  context then aggregates across months and shows the overall cheapest.
+- **Round-trip by default.** Unless told otherwise, search round-trip.
+- **No lazy summaries.** Show the actual data in a readable table. Do not
+  summarize or omit fields to save space.
+- **State methodology.** Always state which months and date intervals were
+  searched so the user knows the scope.
+
+## Logging Levels
+
+- **DEBUG**: Detailed diagnostics, function entry/exit, intermediate values
+- **INFO**: General program flow, successful operations
+- **WARNING**: Unexpected but recoverable situations where the operation still
+  works as intended (e.g., a fallback was used, an optional feature is absent)
+- **ERROR**: A requested capability is broken or lost, even if execution
+  continues with degraded functionality. Litmus test: "did the thing the user
+  asked for actually happen?" If no, that is ERROR, not WARNING.
+- **CRITICAL**: Severe errors that may cause application shutdown
+
+## DRY with Nuance
+
+Extract helpers when duplicated logic encodes an invariant, cap, validation
+rule, or error-handling pattern that should stay identical across call sites.
+Do NOT extract helpers for trivial duplication if it makes the code less
+direct. Three similar lines of code is better than a premature abstraction.
+
+---
+
+## Learned Rules
+
+### Workflow
+- **Always use uv.** Never use pip directly for any dependency management.
+- **Confirm before commit.** Always show staged files and commit message for
+  approval first.
+- **Plan before implement.** Always enter plan mode before non-trivial changes.
+- **No file overlap across branches.** Never commit the same file on two
+  different PR branches.
+- **Small focused commits.** Never one giant commit. Break work into small,
+  focused commits with clear purpose.
+- **Always dry-run first.** Before any real pipeline or destructive script
+  execution, do a dry run.
+- **Check before branch switch.** Always run git status before switching
+  branches.
+
+### Code
+- **No em dashes, en dashes, or Unicode arrows.** Use commas, semicolons,
+  parentheses, or split into two sentences instead. Use `->` instead of
+  Unicode arrows. Hyphens for compound words are fine.
+- **No emojis.** Never use emojis in code, comments, commits, PRs, or
+  documentation.
+- **No AI attribution.** Never include Co-Authored-By, "Generated with
+  Claude Code", or any AI attribution in commits, PRs, or code comments.
+- **No inference as fact.** Never state inferences as fact; only claim what
+  code, docs, or the user explicitly states.
+- **No laziness.** No shorthand like "etc." in public-facing output (PR
+  comments, commits, docs). Verify claims in the code before stating them;
+  never dress up a guess as a fact. Precision over speed.
+- **Dead code: flag, don't delete.** Always proactively check for dead code
+  during reviews and refactors. Flag findings with file:line citations, but
+  never remove without explicit user approval. Dead code may be intentional
+  scaffolding or in-progress work.
+- **Tests mandatory and parallel.** Every addition or change must include
+  corresponding tests written in parallel, not deferred. No "we'll add
+  tests later."
