@@ -539,12 +539,13 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
         best_price = f"${best.snapshot.price:.0f}"
         count = len(triggers)
-        summary = f"{count} deal{'s' if count != 1 else ''} - best {dest_city} {best_price}"
+        plural = "s" if count != 1 else ""
+        summary = f"{count} deal{plural} - best {dest_city} {best_price}"
     else:
         summary = "No deals"
 
-    lines = [summary, ""]
-
+    # Build HTML for reliable mobile rendering
+    blocks = []
     for i, trigger in enumerate(sorted_triggers, 1):
         route = trigger.route
         snap = trigger.snapshot
@@ -558,7 +559,7 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
             pass
         deal = _score_deal(snap.price, stats, departure_month)
 
-        # Price line
+        # Price
         price_str = f"${snap.price:.0f} RT" if snap.return_date else f"${snap.price:.0f}"
 
         # Dates
@@ -573,7 +574,9 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
             if trigger.previous_low > 0:
                 drop_pct = (1 - snap.price / trigger.previous_low) * 100
-                alert_label = f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
+                alert_label = (
+                    f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
+                )
             else:
                 alert_label = f"New low (was ${trigger.previous_low:.0f})"
         elif (
@@ -589,16 +592,36 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
             route.origin, route.destination, snap.departure_date, snap.return_date
         )
 
-        # Compact block
-        route_label = _format_route_label(route.origin, route.destination)
-        lines.append(f"{i}. {route_label}")
-        lines.append(f"   {price_str}  |  {deal}")
-        lines.append(f"   {date_str}")
-        lines.append(f"   {alert_label}")
-        lines.append(f"   Book: {search_url}")
-        lines.append("")
+        # Route label with city names
+        orig_city = _AIRPORT_LOCATIONS.get(route.origin, route.origin)
+        dest_city_label = _AIRPORT_LOCATIONS.get(route.destination, route.destination)
 
-    return "\n".join(lines)
+        block = (
+            f'<div style="margin-bottom:20px;padding:12px;'
+            f'border-left:3px solid #4a90d9;background:#f8f9fa;">'
+            f'<div style="font-size:16px;font-weight:bold;">'
+            f'{i}. {route.origin} -> {route.destination}</div>'
+            f'<div style="font-size:13px;color:#666;">'
+            f'{orig_city} -> {dest_city_label}</div>'
+            f'<div style="font-size:20px;font-weight:bold;margin:8px 0;">'
+            f'{price_str} &middot; {deal}</div>'
+            f'<div style="font-size:14px;">{date_str}</div>'
+            f'<div style="font-size:13px;color:#666;margin:4px 0;">'
+            f'{alert_label}</div>'
+            f'<div style="margin-top:8px;">'
+            f'<a href="{search_url}" style="color:#1a73e8;">'
+            f'Book on Google Flights</a></div>'
+            f'</div>'
+        )
+        blocks.append(block)
+
+    body = (
+        f'<div style="font-family:sans-serif;max-width:600px;margin:0 auto;">'
+        f'<h2 style="margin-bottom:16px;">{summary}</h2>'
+        f'{"".join(blocks)}'
+        f'</div>'
+    )
+    return body
 
 
 def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
@@ -656,7 +679,7 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
 
         ap = apprise.Apprise()
         ap.add(url)
-        success = ap.notify(body=body, title=title)
+        success = ap.notify(body=body, title=title, body_format="html")
 
         # Log each trigger for dedup regardless of delivery success
         for trigger in url_triggers:

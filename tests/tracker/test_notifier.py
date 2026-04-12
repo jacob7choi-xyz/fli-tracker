@@ -549,10 +549,10 @@ class TestFormatDigest:
         trigger = _make_trigger(route_id=route.id)
         body = format_digest([trigger], db)
         assert "1 deal - best" in body
-        assert "DFW (Dallas-Fort Worth, TX)" in body
-        assert "FCO (Rome, Italy)" in body
+        assert "Dallas-Fort Worth, TX" in body
+        assert "Rome, Italy" in body
         assert "$450" in body
-        assert "Book:" in body
+        assert "Book on Google Flights" in body
         assert "google.com/travel/flights" in body
 
     def test_multiple_triggers_sorted_by_price(self, db: TrackerDB):

@@ -1,4 +1,5 @@
 code,city,region,country
+ADD,Addis Ababa,,Ethiopia
 AKL,Auckland,,New Zealand
 AMS,Amsterdam,,Netherlands
 ANC,Anchorage,AK,US
@@ -6,48 +7,107 @@ ATH,Athens,,Greece
 ATL,Atlanta,GA,US
 AUS,Austin,TX,US
 BCN,Barcelona,,Spain
+BJX,Leon/Guanajuato,,Mexico
 BKK,Bangkok,,Thailand
+BNA,Nashville,TN,US
 BOG,Bogota,,Colombia
 BOS,Boston,MA,US
+BRU,Brussels,,Belgium
+BUD,Budapest,,Hungary
 BWI,Baltimore,MD,US
+CAI,Cairo,,Egypt
 CDG,Paris,,France
 CLT,Charlotte,NC,US
+CMB,Colombo,,Sri Lanka
+CPH,Copenhagen,,Denmark
+CPT,Cape Town,,South Africa
 CUN,Cancun,,Mexico
+CUZ,Cusco,,Peru
 DAL,Dallas Love Field,TX,US
+DEL,Delhi,,India
 DEN,Denver,CO,US
 DFW,Dallas-Fort Worth,TX,US
+DOH,Doha,,Qatar
+DPS,Bali,,Indonesia
 DTW,Detroit,MI,US
 DUB,Dublin,,Ireland
+DXB,Dubai,,UAE
+EDI,Edinburgh,,UK
 EWR,Newark,NJ,US
 EZE,Buenos Aires,,Argentina
 FCO,Rome,,Italy
+FLL,Fort Lauderdale,FL,US
+FLR,Florence,,Italy
+GIG,Rio de Janeiro,,Brazil
 GRU,Sao Paulo,,Brazil
+GUA,Guatemala City,,Guatemala
+GVA,Geneva,,Switzerland
+HAN,Hanoi,,Vietnam
+HEL,Helsinki,,Finland
+HKG,Hong Kong,,China
 HND,Tokyo Haneda,,Japan
 HNL,Honolulu,HI,US
 IAH,Houston,TX,US
 ICN,Seoul,,South Korea
 IST,Istanbul,,Turkey
 JFK,New York,NY,US
+JNB,Johannesburg,,South Africa
+KIX,Osaka,,Japan
+KUL,Kuala Lumpur,,Malaysia
+LAS,Las Vegas,NV,US
 LAX,Los Angeles,CA,US
 LHR,London,,UK
+LIM,Lima,,Peru
+LIR,Liberia,,Costa Rica
 LIS,Lisbon,,Portugal
+MAD,Madrid,,Spain
+MBJ,Montego Bay,,Jamaica
+MCO,Orlando,FL,US
+MDE,Medellin,,Colombia
 MEX,Mexico City,,Mexico
 MIA,Miami,FL,US
+MID,Merida,,Mexico
+MLE,Male,,Maldives
 MSP,Minneapolis,MN,US
 MSY,New Orleans,LA,US
+MTY,Monterrey,,Mexico
+MUC,Munich,,Germany
+NAP,Naples,,Italy
 NRT,Tokyo Narita,,Japan
+OAX,Oaxaca,,Mexico
+OGG,Maui,HI,US
 ORD,Chicago,IL,US
+OSL,Oslo,,Norway
 PDX,Portland,OR,US
 PHX,Phoenix,AZ,US
+PNS,Pensacola,FL,US
+PPT,Tahiti,,French Polynesia
+PRG,Prague,,Czech Republic
 PUJ,Punta Cana,,Dominican Republic
+PVR,Puerto Vallarta,,Mexico
 PWM,Portland,ME,US
+RAK,Marrakech,,Morocco
+REK,Reykjavik,,Iceland
+SAL,San Salvador,,El Salvador
 SAN,San Diego,CA,US
 SCL,Santiago,,Chile
+SDQ,Santo Domingo,,Dominican Republic
 SEA,Seattle,WA,US
 SFO,San Francisco,CA,US
+SGN,Ho Chi Minh City,,Vietnam
+SIN,Singapore,,Singapore
+SJD,Cabo San Lucas,,Mexico
 SJO,San Jose,,Costa Rica
 SJU,San Juan,,Puerto Rico
+STR,Stuttgart,,Germany
+SVO,Moscow,,Russia
 SYD,Sydney,,Australia
+TLV,Tel Aviv,,Israel
+VCE,Venice,,Italy
+VIE,Vienna,,Austria
+WAW,Warsaw,,Poland
 YUL,Montreal,,Canada
 YVR,Vancouver,,Canada
+YYC,Calgary,,Canada
 YYZ,Toronto,,Canada
+ZRH,Zurich,,Switzerland
