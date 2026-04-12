@@ -7,7 +7,7 @@ import typer
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
-from fli.tracker.notifier import notify_all
+from fli.tracker.notifier import send_digest
 from fli.tracker.scanner import scan_route
 
 
@@ -24,7 +24,8 @@ def watch(
     """Run a single price sweep of all active routes.
 
     Scans each active tracked route, stores price snapshots,
-    checks alerts, and sends notifications for any triggers.
+    checks alerts, and sends a single digest notification
+    for all triggers.
 
     For recurring sweeps, use cron:
         */6 * * * * fli watch
@@ -58,8 +59,8 @@ def watch(
                 typer.echo(f"Stored {len(snapshots)} price snapshots")
 
                 if triggers:
-                    sent = notify_all(triggers, db)
-                    typer.echo(f"Sent {sent}/{len(triggers)} notifications")
+                    sent = send_digest(triggers, db)
+                    typer.echo(f"Sent digest with {sent}/{len(triggers)} alerts")
                 else:
                     typer.echo("No alerts triggered")
             else:
@@ -75,8 +76,7 @@ def watch(
 
             typer.echo(f"Scanning {len(routes)} active route(s)...")
             total_snapshots = 0
-            total_triggers = 0
-            total_sent = 0
+            all_triggers = []
 
             for route in routes:
                 typer.echo(f"  {route.origin} -> {route.destination}...", nl=False)
@@ -92,18 +92,21 @@ def watch(
                     typer.echo(f" {len(snapshots)} prices", nl=False)
 
                     if triggers:
-                        sent = notify_all(triggers, db)
-                        total_triggers += len(triggers)
-                        total_sent += sent
-                        typer.echo(f", {sent} alert(s) sent")
+                        all_triggers.extend(triggers)
+                        typer.echo(f", {len(triggers)} alert(s)")
                     else:
                         typer.echo("")
                 else:
                     typer.echo(" no results")
 
+            # Send one digest for all triggers from the sweep
+            total_sent = 0
+            if all_triggers:
+                total_sent = send_digest(all_triggers, db)
+
             typer.echo(
                 f"Sweep complete: {total_snapshots} snapshots, "
-                f"{total_triggers} alerts triggered, "
+                f"{len(all_triggers)} alerts triggered, "
                 f"{total_sent} notifications sent"
             )
     finally:

@@ -1,0 +1,53 @@
+code,city,region,country
+AKL,Auckland,,New Zealand
+AMS,Amsterdam,,Netherlands
+ANC,Anchorage,AK,US
+ATH,Athens,,Greece
+ATL,Atlanta,GA,US
+AUS,Austin,TX,US
+BCN,Barcelona,,Spain
+BKK,Bangkok,,Thailand
+BOG,Bogota,,Colombia
+BOS,Boston,MA,US
+BWI,Baltimore,MD,US
+CDG,Paris,,France
+CLT,Charlotte,NC,US
+CUN,Cancun,,Mexico
+DAL,Dallas Love Field,TX,US
+DEN,Denver,CO,US
+DFW,Dallas-Fort Worth,TX,US
+DTW,Detroit,MI,US
+DUB,Dublin,,Ireland
+EWR,Newark,NJ,US
+EZE,Buenos Aires,,Argentina
+FCO,Rome,,Italy
+GRU,Sao Paulo,,Brazil
+HND,Tokyo Haneda,,Japan
+HNL,Honolulu,HI,US
+IAH,Houston,TX,US
+ICN,Seoul,,South Korea
+IST,Istanbul,,Turkey
+JFK,New York,NY,US
+LAX,Los Angeles,CA,US
+LHR,London,,UK
+LIS,Lisbon,,Portugal
+MEX,Mexico City,,Mexico
+MIA,Miami,FL,US
+MSP,Minneapolis,MN,US
+MSY,New Orleans,LA,US
+NRT,Tokyo Narita,,Japan
+ORD,Chicago,IL,US
+PDX,Portland,OR,US
+PHX,Phoenix,AZ,US
+PUJ,Punta Cana,,Dominican Republic
+PWM,Portland,ME,US
+SAN,San Diego,CA,US
+SCL,Santiago,,Chile
+SEA,Seattle,WA,US
+SFO,San Francisco,CA,US
+SJO,San Jose,,Costa Rica
+SJU,San Juan,,Puerto Rico
+SYD,Sydney,,Australia
+YUL,Montreal,,Canada
+YVR,Vancouver,,Canada
+YYZ,Toronto,,Canada

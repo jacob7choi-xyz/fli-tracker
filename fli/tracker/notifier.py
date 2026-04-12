@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -38,6 +39,44 @@ _MIN_DECILE_SAMPLES = 20
 
 # Peak travel months (higher scores for cheap fares in expensive seasons)
 _PEAK_MONTHS = {6, 7, 8, 12}
+
+def _load_airport_locations() -> dict[str, str]:
+    """Load airport city/location labels from data/airport_locations.csv.
+
+    Returns a dict mapping IATA code to a display label like
+    "Dallas-Fort Worth, TX" (domestic) or "Rome, Italy" (international).
+    """
+    csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "airport_locations.csv"
+    locations: dict[str, str] = {}
+    try:
+        with open(csv_path) as f:
+            import csv
+
+            reader = csv.DictReader(f)
+            for row in reader:
+                code = row["code"].strip()
+                city = row["city"].strip()
+                region = row.get("region", "").strip()
+                country = row.get("country", "").strip()
+                if country == "US" and region:
+                    locations[code] = f"{city}, {region}"
+                elif country:
+                    locations[code] = f"{city}, {country}"
+                else:
+                    locations[code] = city
+    except FileNotFoundError:
+        logger.warning("Airport locations file not found: %s", csv_path)
+    return locations
+
+
+_AIRPORT_LOCATIONS: dict[str, str] = _load_airport_locations()
+
+
+def _format_route_label(origin: str, destination: str) -> str:
+    """Format a route with city names for readable digest output."""
+    orig_city = _AIRPORT_LOCATIONS.get(origin, origin)
+    dest_city = _AIRPORT_LOCATIONS.get(destination, destination)
+    return f"{origin} ({orig_city}) -> {destination} ({dest_city})"
 
 
 def _score_deal(price: float, stats: RouteStats | None, departure_month: int | None) -> str:
@@ -470,6 +509,174 @@ def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
 
     logger.info("Sent %d/%d notifications", sent, len(triggers))
     return sent
+
+
+def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
+    """Format multiple alert triggers into a single digest email body.
+
+    Triggers are sorted by deal significance: drops before thresholds,
+    then by price ascending. Each deal gets a compact block with route,
+    dates, price, drop context, and deal rating.
+
+    Args:
+        triggers: All triggers from a single sweep.
+        db: Tracker database for fetching route stats.
+
+    Returns:
+        Formatted digest string.
+
+    """
+    # Sort: drops first, then by price ascending
+    def sort_key(t: AlertTrigger) -> tuple:
+        type_order = 0 if t.alert.alert_type == AlertType.DROP else 1
+        return (type_order, t.snapshot.price)
+
+    sorted_triggers = sorted(triggers, key=sort_key)
+
+    # One-line summary: count + best deal
+    best = sorted_triggers[0] if sorted_triggers else None
+    if best:
+        dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
+        best_price = f"${best.snapshot.price:.0f}"
+        count = len(triggers)
+        summary = f"{count} deal{'s' if count != 1 else ''} - best {dest_city} {best_price}"
+    else:
+        summary = "No deals"
+
+    lines = [summary, ""]
+
+    for i, trigger in enumerate(sorted_triggers, 1):
+        route = trigger.route
+        snap = trigger.snapshot
+        stats = db.get_route_stats(route.id)
+
+        # Deal rating
+        departure_month = None
+        try:
+            departure_month = int(snap.departure_date.split("-")[1])
+        except (IndexError, ValueError):
+            pass
+        deal = _score_deal(snap.price, stats, departure_month)
+
+        # Price line
+        price_str = f"${snap.price:.0f} RT" if snap.return_date else f"${snap.price:.0f}"
+
+        # Dates
+        if snap.return_date:
+            nights = _compute_nights(snap.departure_date, snap.return_date)
+            nights_str = f" ({nights}n)" if nights else ""
+            date_str = f"{snap.departure_date} -> {snap.return_date}{nights_str}"
+        else:
+            date_str = f"{snap.departure_date} (one-way)"
+
+        # Alert type label
+        if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
+            if trigger.previous_low > 0:
+                drop_pct = (1 - snap.price / trigger.previous_low) * 100
+                alert_label = f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
+            else:
+                alert_label = f"New low (was ${trigger.previous_low:.0f})"
+        elif (
+            trigger.alert.alert_type == AlertType.THRESHOLD
+            and trigger.alert.threshold is not None
+        ):
+            alert_label = f"Below ${trigger.alert.threshold:.0f} threshold"
+        else:
+            alert_label = "Alert triggered"
+
+        # Search link
+        search_url = _build_search_url(
+            route.origin, route.destination, snap.departure_date, snap.return_date
+        )
+
+        # Compact block
+        route_label = _format_route_label(route.origin, route.destination)
+        lines.append(f"{i}. {route_label}")
+        lines.append(f"   {price_str}  |  {deal}")
+        lines.append(f"   {date_str}")
+        lines.append(f"   {alert_label}")
+        lines.append(f"   Book: {search_url}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
+    """Send a single digest email containing all triggered alerts.
+
+    Groups triggers by notify_url and sends one digest per URL.
+    Logs each trigger individually for dedup regardless of delivery success.
+
+    Args:
+        triggers: All triggers from a single sweep.
+        db: Tracker database for logging and stats.
+
+    Returns:
+        Number of triggers included in successfully sent digests.
+
+    """
+    if not triggers:
+        return 0
+
+    # Filter out triggers above the route's max_price
+    filtered = []
+    for t in triggers:
+        if t.route.max_price is not None and t.snapshot.price > t.route.max_price:
+            logger.info(
+                "Skipping %s -> %s ($%.0f > $%.0f max) for digest",
+                t.route.origin, t.route.destination, t.snapshot.price, t.route.max_price,
+            )
+            continue
+        filtered.append(t)
+
+    if not filtered:
+        return 0
+
+    if not _HAS_APPRISE:
+        logger.error("apprise is not installed. Install it with: uv add apprise")
+        return 0
+
+    # Group triggers by notify_url
+    triggers = filtered
+    by_url: dict[str, list[AlertTrigger]] = {}
+    for trigger in triggers:
+        url = trigger.alert.notify_url
+        by_url.setdefault(url, []).append(trigger)
+
+    total_sent = 0
+
+    for url, url_triggers in by_url.items():
+        body = format_digest(url_triggers, db)
+        # Short subject for mobile: best deal at a glance
+        best = min(url_triggers, key=lambda t: t.snapshot.price)
+        dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
+        count = len(url_triggers)
+        plural = "s" if count != 1 else ""
+        title = f"{count} deal{plural} - best {dest_city} ${best.snapshot.price:.0f}"
+
+        ap = apprise.Apprise()
+        ap.add(url)
+        success = ap.notify(body=body, title=title)
+
+        # Log each trigger for dedup regardless of delivery success
+        for trigger in url_triggers:
+            db.log_notification(
+                NotificationRecord(
+                    alert_id=trigger.alert.id,
+                    departure_date=trigger.snapshot.departure_date,
+                    return_date=trigger.snapshot.return_date,
+                    price=trigger.snapshot.price,
+                    message=body,
+                )
+            )
+
+        if success:
+            total_sent += len(url_triggers)
+            logger.info("Digest sent: %d alerts via %s", len(url_triggers), url)
+        else:
+            logger.error("Digest delivery failed via %s", url)
+
+    return total_sent
 
 
 def _build_title(

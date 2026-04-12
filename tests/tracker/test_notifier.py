@@ -18,8 +18,10 @@ from fli.tracker.notifier import (
     _compute_nights,
     _format_perks,
     _score_deal,
+    format_digest,
     format_message,
     notify_all,
+    send_digest,
     send_notification,
 )
 
@@ -40,8 +42,9 @@ def _make_trigger(
     destination: str = "FCO",
     alert_id: int = 1,
     route_id: int = 1,
+    max_price: float | None = None,
 ) -> AlertTrigger:
-    route = Route(id=route_id, origin=origin, destination=destination)
+    route = Route(id=route_id, origin=origin, destination=destination, max_price=max_price)
     alert = Alert(
         id=alert_id,
         route_id=route_id,
@@ -524,3 +527,232 @@ class TestBuildTitle:
         trigger = _make_trigger(alert_type=alert_type, threshold=500.0)
         title = _build_title(trigger)
         assert title.startswith(expected_prefix)
+
+
+# ------------------------------------------------------------------
+# Digest
+# ------------------------------------------------------------------
+
+
+class TestFormatDigest:
+    """Tests for digest email formatting."""
+
+    def test_single_trigger_digest(self, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        trigger = _make_trigger(route_id=route.id)
+        body = format_digest([trigger], db)
+        assert "1 deal - best" in body
+        assert "DFW (Dallas-Fort Worth, TX)" in body
+        assert "FCO (Rome, Italy)" in body
+        assert "$450" in body
+        assert "Book:" in body
+        assert "google.com/travel/flights" in body
+
+    def test_multiple_triggers_sorted_by_price(self, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        t1 = _make_trigger(price=600.0, route_id=route.id)
+        t2 = _make_trigger(price=300.0, route_id=route.id)
+        body = format_digest([t1, t2], db)
+        assert "2 deals - best" in body
+        # Cheaper should appear first (lower index in string)
+        assert body.index("$300") < body.index("$600")
+
+    def test_drops_before_thresholds(self, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        drop = _make_trigger(
+            alert_type=AlertType.DROP, price=500.0, route_id=route.id
+        )
+        threshold = _make_trigger(
+            alert_type=AlertType.THRESHOLD,
+            price=400.0,
+            threshold=600.0,
+            previous_low=None,
+            route_id=route.id,
+        )
+        body = format_digest([threshold, drop], db)
+        # Drop should appear before threshold even though threshold is cheaper
+        assert body.index("New low") < body.index("threshold")
+
+    def test_digest_includes_deal_rating(self, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        trigger = _make_trigger(route_id=route.id)
+        body = format_digest([trigger], db)
+        # Should have some deal label (Building history... since no stats)
+        assert "Building history..." in body
+
+    def test_empty_triggers_returns_header_only(self, db: TrackerDB):
+        body = format_digest([], db)
+        assert "No deals" in body
+
+
+class TestSendDigest:
+    """Tests for digest delivery."""
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_sends_one_email_for_multiple_triggers(self, mock_apprise_mod, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        t1 = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
+        t2 = _make_trigger(
+            price=400.0, alert_id=alert.id, route_id=route.id,
+            departure_date="2026-07-20",
+        )
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = True
+
+        sent = send_digest([t1, t2], db)
+
+        assert sent == 2
+        # Only ONE email sent (one call to notify)
+        mock_ap.notify.assert_called_once()
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_logs_each_trigger_for_dedup(self, mock_apprise_mod, db: TrackerDB):
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        t1 = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
+        t2 = _make_trigger(
+            price=400.0, alert_id=alert.id, route_id=route.id,
+            departure_date="2026-07-20",
+        )
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = True
+
+        send_digest([t1, t2], db)
+
+        # Both triggers should be logged for dedup
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
+        assert db.was_notification_sent(alert.id, "2026-07-20", 400.0, "2026-07-22") is True
+
+    def test_empty_triggers_returns_zero(self, db: TrackerDB):
+        assert send_digest([], db) == 0
+
+    @patch("fli.tracker.notifier._HAS_APPRISE", False)
+    def test_no_apprise_returns_zero(self, db: TrackerDB):
+        trigger = _make_trigger()
+        assert send_digest([trigger], db) == 0
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_max_price_filters_expensive_triggers(self, mock_apprise_mod, db: TrackerDB):
+        """Triggers above route max_price are excluded from the digest."""
+        route = db.add_route(Route(origin="DFW", destination="NRT", max_price=900.0))
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        cheap = _make_trigger(
+            price=850.0, alert_id=alert.id, route_id=route.id, max_price=900.0,
+        )
+        expensive = _make_trigger(
+            price=1100.0, alert_id=alert.id, route_id=route.id,
+            departure_date="2026-08-01", max_price=900.0,
+        )
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = True
+
+        sent = send_digest([cheap, expensive], db)
+
+        # Only the cheap trigger should be sent
+        assert sent == 1
+        mock_ap.notify.assert_called_once()
+
+    def test_all_triggers_above_max_price_returns_zero(self, db: TrackerDB):
+        """If all triggers exceed max_price, nothing is sent."""
+        trigger = _make_trigger(price=1000.0, max_price=800.0)
+        assert send_digest([trigger], db) == 0
+
+
+class TestAirportLocations:
+    """Tests for airport location metadata."""
+
+    def test_csv_loads_successfully(self):
+        from fli.tracker.notifier import _AIRPORT_LOCATIONS
+
+        assert len(_AIRPORT_LOCATIONS) > 0
+
+    def test_domestic_format_city_state(self):
+        from fli.tracker.notifier import _AIRPORT_LOCATIONS
+
+        assert _AIRPORT_LOCATIONS["DFW"] == "Dallas-Fort Worth, TX"
+        assert _AIRPORT_LOCATIONS["BOS"] == "Boston, MA"
+
+    def test_international_format_city_country(self):
+        from fli.tracker.notifier import _AIRPORT_LOCATIONS
+
+        assert _AIRPORT_LOCATIONS["FCO"] == "Rome, Italy"
+        assert _AIRPORT_LOCATIONS["NRT"] == "Tokyo Narita, Japan"
+
+    def test_fallback_for_unknown_code(self):
+        from fli.tracker.notifier import _format_route_label
+
+        # Unknown code falls back to the bare IATA code
+        label = _format_route_label("ZZZ", "YYY")
+        assert "ZZZ" in label
+        assert "YYY" in label
+
+    def test_tracked_airports_have_metadata(self):
+        """Every airport in the current tracked routes has location metadata."""
+        from fli.tracker.notifier import _AIRPORT_LOCATIONS
+
+        tracked_codes = [
+            "DFW", "ATL", "ORD", "LAX", "SFO", "SEA", "MIA", "BOS", "JFK",
+            "DEN", "MSP", "PHX", "HNL", "ANC", "PWM",
+            "CUN", "SJO",
+            "LHR", "CDG", "FCO", "BCN", "LIS", "AMS", "DUB", "ATH", "IST",
+            "NRT", "ICN", "BKK",
+            "SYD", "AKL", "GRU", "EZE", "BOG", "SCL",
+        ]
+        missing = [c for c in tracked_codes if c not in _AIRPORT_LOCATIONS]
+        assert missing == [], f"Missing airport metadata for: {missing}"

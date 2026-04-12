@@ -16,6 +16,22 @@ def _get_db() -> TrackerDB:
     return TrackerDB()
 
 
+def _parse_durations(raw: str) -> list[int]:
+    """Parse comma-separated durations into sorted unique positive ints."""
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        val = int(part)
+        if val < 1 or val > 21:
+            raise ValueError(f"Duration must be 1-21 days, got {val}")
+        values.append(val)
+    if not values:
+        raise ValueError("At least one duration is required")
+    return sorted(set(values))
+
+
 @track_app.command(name="add")
 def track_add(
     origin: Annotated[str, typer.Argument(help="Departure airport IATA code")],
@@ -30,10 +46,13 @@ def track_add(
         str,
         typer.Option("--stops", "-s", help="Max stops (ANY, NON_STOP, ONE_STOP, TWO_PLUS_STOPS)"),
     ] = "ANY",
-    trip_duration: Annotated[
-        int,
-        typer.Option("--duration", "-d", help="Round-trip duration in days"),
-    ] = 7,
+    durations: Annotated[
+        str,
+        typer.Option(
+            "--durations", "-d",
+            help="Trip durations in days, comma-separated (e.g. 5,7,10)",
+        ),
+    ] = "7",
     look_ahead: Annotated[
         int,
         typer.Option("--look-ahead", "-l", help="Days ahead to scan"),
@@ -42,6 +61,10 @@ def track_add(
         bool,
         typer.Option("--one-way", help="Track as one-way (default is round-trip)"),
     ] = False,
+    max_price: Annotated[
+        float | None,
+        typer.Option("--max-price", help="Only alert for fares at or below this price"),
+    ] = None,
 ):
     """Add a route to track."""
     try:
@@ -55,6 +78,12 @@ def track_add(
         typer.echo("Error: Origin and destination must be different")
         raise typer.Exit(1)
 
+    try:
+        parsed_durations = _parse_durations(durations)
+    except ValueError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(1) from e
+
     db = _get_db()
     route = db.add_route(
         Route(
@@ -62,15 +91,21 @@ def track_add(
             destination=destination.upper(),
             cabin_class=cabin_class.upper(),
             max_stops=max_stops.upper(),
-            trip_duration=trip_duration,
+            durations=parsed_durations,
             look_ahead=look_ahead,
             is_round_trip=not one_way,
+            max_price=max_price,
         )
     )
     db.close()
 
-    trip_type = "one-way" if one_way else f"round-trip ({trip_duration}d)"
-    typer.echo(f"Added route {route.id}: {origin.upper()} -> {destination.upper()} [{trip_type}]")
+    dur_str = ",".join(str(d) for d in parsed_durations)
+    trip_type = "one-way" if one_way else f"round-trip ({dur_str}d)"
+    price_str = f" [max ${max_price:.0f}]" if max_price else ""
+    typer.echo(
+        f"Added route {route.id}: {origin.upper()} -> {destination.upper()}"
+        f" [{trip_type}]{price_str}"
+    )
 
 
 @track_app.command(name="list")
@@ -94,19 +129,25 @@ def track_list(
     table = Table(title="Tracked Routes")
     table.add_column("ID", style="cyan")
     table.add_column("Route")
-    table.add_column("Type")
+    table.add_column("Durations")
+    table.add_column("Max Price")
     table.add_column("Cabin")
     table.add_column("Stops")
     table.add_column("Look-ahead")
     table.add_column("Status")
 
     for r in routes:
-        trip_type = f"RT ({r.trip_duration}d)" if r.is_round_trip else "OW"
+        if r.is_round_trip:
+            dur_str = "RT (" + ",".join(str(d) for d in r.durations) + "d)"
+        else:
+            dur_str = "OW"
+        price_str = f"${r.max_price:.0f}" if r.max_price else "-"
         status = "active" if r.active else "paused"
         table.add_row(
             str(r.id),
             f"{r.origin} -> {r.destination}",
-            trip_type,
+            dur_str,
+            price_str,
             r.cabin_class,
             r.max_stops,
             f"{r.look_ahead}d",

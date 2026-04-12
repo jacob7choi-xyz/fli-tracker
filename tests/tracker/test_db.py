@@ -400,16 +400,41 @@ class TestRouteStats:
         """Migration adds columns safely even when run multiple times."""
         db_path = tmp_path / "migrate.db"
         db1 = TrackerDB(db_path=db_path)
-        # Verify columns exist
-        cols = {
+        # Verify notification_log columns exist
+        notif_cols = {
             r["name"] for r in db1._conn.execute("PRAGMA table_info(notification_log)").fetchall()
         }
-        assert "departure_date" in cols
-        assert "return_date" in cols
+        assert "departure_date" in notif_cols
+        assert "return_date" in notif_cols
+        # Verify route columns exist
+        route_cols = {
+            r["name"] for r in db1._conn.execute("PRAGMA table_info(routes)").fetchall()
+        }
+        assert "durations" in route_cols
+        assert "max_price" in route_cols
         db1.close()
         # Re-open (migration runs again) -- should not fail
         db2 = TrackerDB(db_path=db_path)
         db2.close()
+
+    def test_migration_preserves_trip_duration_as_durations(self, tmp_path):
+        """Old routes with trip_duration=14 get migrated to durations=[14]."""
+        db_path = tmp_path / "migrate_dur.db"
+        db = TrackerDB(db_path=db_path)
+        # Insert a route with custom trip_duration, simulating old schema
+        db._conn.execute(
+            "UPDATE routes SET trip_duration = 14, durations = '[14]' WHERE 0",
+        )
+        # Insert directly with old-style data
+        db._conn.execute(
+            "INSERT INTO routes (origin, destination, trip_duration, durations)"
+            " VALUES ('DFW', 'FCO', 14, '[14]')",
+        )
+        db._conn.commit()
+        route = db.list_routes(active_only=False)[0]
+        assert route.durations == [14]
+        assert route.trip_duration == 14
+        db.close()
 
 
 # ------------------------------------------------------------------

@@ -4,6 +4,7 @@ Manages the database schema, route CRUD, price snapshot storage,
 alert configuration, and notification logging.
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -97,14 +98,29 @@ class TrackerDB:
 
     def _migrate(self) -> None:
         """Run idempotent schema migrations for columns added after v1."""
-        existing = {
+        notif_cols = {
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(notification_log)").fetchall()
         }
-        if "departure_date" not in existing:
+        if "departure_date" not in notif_cols:
             self._conn.execute("ALTER TABLE notification_log ADD COLUMN departure_date TEXT")
-        if "return_date" not in existing:
+        if "return_date" not in notif_cols:
             self._conn.execute("ALTER TABLE notification_log ADD COLUMN return_date TEXT")
+
+        route_cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(routes)").fetchall()
+        }
+        if "durations" not in route_cols:
+            self._conn.execute("ALTER TABLE routes ADD COLUMN durations TEXT DEFAULT '[7]'")
+            # Migrate existing trip_duration values into durations
+            self._conn.execute(
+                "UPDATE routes SET durations = '[' || trip_duration || ']'"
+                " WHERE durations IS NULL OR durations = '[7]'"
+            )
+        if "max_price" not in route_cols:
+            self._conn.execute("ALTER TABLE routes ADD COLUMN max_price REAL")
+
         self._conn.commit()
 
     def close(self) -> None:
@@ -120,8 +136,9 @@ class TrackerDB:
         cur = self._conn.execute(
             """
             INSERT INTO routes (origin, destination, cabin_class, max_stops,
-                                trip_duration, look_ahead, is_round_trip, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                trip_duration, look_ahead, is_round_trip, active,
+                                durations, max_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 route.origin,
@@ -132,6 +149,8 @@ class TrackerDB:
                 route.look_ahead,
                 int(route.is_round_trip),
                 int(route.active),
+                json.dumps(route.durations),
+                route.max_price,
             ),
         )
         self._conn.commit()
@@ -183,15 +202,25 @@ class TrackerDB:
 
     @staticmethod
     def _row_to_route(row: sqlite3.Row) -> Route:
+        # Backward compat: old rows may lack durations column
+        durations_raw = row["durations"] if "durations" in row.keys() else None
+        if durations_raw:
+            durations = json.loads(durations_raw)
+        else:
+            durations = [row["trip_duration"]]
+
+        max_price_raw = row["max_price"] if "max_price" in row.keys() else None
+
         return Route(
             id=row["id"],
             origin=row["origin"],
             destination=row["destination"],
             cabin_class=row["cabin_class"],
             max_stops=row["max_stops"],
-            trip_duration=row["trip_duration"],
+            durations=durations,
             look_ahead=row["look_ahead"],
             is_round_trip=bool(row["is_round_trip"]),
+            max_price=float(max_price_raw) if max_price_raw is not None else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             active=bool(row["active"]),
         )

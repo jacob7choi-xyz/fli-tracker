@@ -26,11 +26,17 @@ class Route(BaseModel):
     destination: str
     cabin_class: str = "ECONOMY"
     max_stops: str = "ANY"
-    trip_duration: PositiveInt = 7
+    durations: list[PositiveInt] = [7]
     look_ahead: PositiveInt = 90
     is_round_trip: bool = True
+    max_price: float | None = None
     created_at: datetime | None = None
     active: bool = True
+
+    @property
+    def trip_duration(self) -> int:
+        """Return the first duration for backward compatibility."""
+        return self.durations[0]
 
 
 class PriceSnapshot(BaseModel):

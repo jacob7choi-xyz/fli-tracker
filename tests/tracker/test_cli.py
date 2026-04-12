@@ -61,15 +61,18 @@ class TestTrackAdd:
                 "business",
                 "--stops",
                 "non_stop",
-                "--duration",
-                "14",
+                "--durations",
+                "7,10,14",
+                "--max-price",
+                "800",
             ],
         )
         assert result.exit_code == 0
         routes = tmp_db.list_routes()
         assert len(routes) == 1
         assert routes[0].cabin_class == "BUSINESS"
-        assert routes[0].trip_duration == 14
+        assert routes[0].durations == [7, 10, 14]
+        assert routes[0].max_price == 800.0
 
     def test_add_one_way(self, runner, tmp_db):
         result = runner.invoke(app, ["track", "add", "DFW", "FCO", "--one-way"])

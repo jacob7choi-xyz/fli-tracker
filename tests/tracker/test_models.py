@@ -11,9 +11,11 @@ class TestRoute:
         route = Route(origin="DFW", destination="FCO")
         assert route.cabin_class == "ECONOMY"
         assert route.max_stops == "ANY"
-        assert route.trip_duration == 7
+        assert route.durations == [7]
+        assert route.trip_duration == 7  # backward compat property
         assert route.look_ahead == 90
         assert route.is_round_trip is True
+        assert route.max_price is None
         assert route.active is True
         assert route.id is None
         assert route.created_at is None
@@ -24,21 +26,24 @@ class TestRoute:
             destination="LHR",
             cabin_class="BUSINESS",
             max_stops="NON_STOP",
-            trip_duration=14,
+            durations=[5, 7, 10],
             look_ahead=120,
             is_round_trip=False,
+            max_price=800.0,
         )
         assert route.origin == "JFK"
         assert route.destination == "LHR"
         assert route.cabin_class == "BUSINESS"
         assert route.max_stops == "NON_STOP"
-        assert route.trip_duration == 14
+        assert route.durations == [5, 7, 10]
+        assert route.trip_duration == 5  # first duration
         assert route.look_ahead == 120
         assert route.is_round_trip is False
+        assert route.max_price == 800.0
 
-    def test_trip_duration_must_be_positive(self):
+    def test_durations_must_be_positive(self):
         with pytest.raises(ValidationError):
-            Route(origin="DFW", destination="FCO", trip_duration=0)
+            Route(origin="DFW", destination="FCO", durations=[0])
 
     def test_look_ahead_must_be_positive(self):
         with pytest.raises(ValidationError):
