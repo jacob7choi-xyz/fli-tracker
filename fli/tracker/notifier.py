@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -42,31 +41,33 @@ _MIN_DECILE_SAMPLES = 20
 _PEAK_MONTHS = {6, 7, 8, 12}
 
 def _load_airport_locations() -> dict[str, str]:
-    """Load airport city/location labels from data/airport_locations.csv.
+    """Load airport city/location labels from the bundled CSV package data.
 
     Returns a dict mapping IATA code to a display label like
     "Dallas-Fort Worth, TX" (domestic) or "Rome, Italy" (international).
     """
-    csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "airport_locations.csv"
+    import csv
+    import importlib.resources
+    import io
+
     locations: dict[str, str] = {}
     try:
-        with open(csv_path) as f:
-            import csv
-
-            reader = csv.DictReader(f)
-            for row in reader:
-                code = row["code"].strip()
-                city = row["city"].strip()
-                region = row.get("region", "").strip()
-                country = row.get("country", "").strip()
-                if country == "US" and region:
-                    locations[code] = f"{city}, {region}"
-                elif country:
-                    locations[code] = f"{city}, {country}"
-                else:
-                    locations[code] = city
+        ref = importlib.resources.files("fli.tracker.data").joinpath("airport_locations.csv")
+        text = ref.read_text(encoding="utf-8")
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            code = row["code"].strip()
+            city = row["city"].strip()
+            region = row.get("region", "").strip()
+            country = row.get("country", "").strip()
+            if country == "US" and region:
+                locations[code] = f"{city}, {region}"
+            elif country:
+                locations[code] = f"{city}, {country}"
+            else:
+                locations[code] = city
     except FileNotFoundError:
-        logger.warning("Airport locations file not found: %s", csv_path)
+        logger.warning("Bundled airport_locations.csv not found in fli.tracker.data")
     return locations
 
 

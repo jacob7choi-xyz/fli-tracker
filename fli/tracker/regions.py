@@ -1,14 +1,15 @@
 """Route region classification using airport country metadata.
 
 Classifies routes as 'domestic' or 'longhaul' based on the
-destination country from data/airport_locations.csv.
+destination country from the bundled airport_locations.csv.
 """
 
 from __future__ import annotations
 
 import csv
+import importlib.resources
+import io
 import logging
-from pathlib import Path
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -23,19 +24,19 @@ _DOMESTIC_COUNTRIES = {
 
 
 def _load_airport_countries() -> dict[str, str]:
-    """Load airport country mapping from data/airport_locations.csv."""
-    csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "airport_locations.csv"
+    """Load airport country mapping from the bundled CSV package data."""
     countries: dict[str, str] = {}
     try:
-        with open(csv_path) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                code = row["code"].strip()
-                country = row.get("country", "").strip()
-                if country:
-                    countries[code] = country
+        ref = importlib.resources.files("fli.tracker.data").joinpath("airport_locations.csv")
+        text = ref.read_text(encoding="utf-8")
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            code = row["code"].strip()
+            country = row.get("country", "").strip()
+            if country:
+                countries[code] = country
     except FileNotFoundError:
-        logger.warning("Airport locations file not found: %s", csv_path)
+        logger.warning("Bundled airport_locations.csv not found in fli.tracker.data")
     return countries
 
 
