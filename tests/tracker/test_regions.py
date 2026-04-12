@@ -18,6 +18,7 @@ class TestRouteGroup:
             pytest.param("DFW", "SDQ", "domestic", id="us_to_dominican_republic"),
             pytest.param("DFW", "GUA", "domestic", id="us_to_guatemala"),
             pytest.param("DFW", "SAL", "domestic", id="us_to_el_salvador"),
+            pytest.param("DFW", "MBJ", "domestic", id="us_to_jamaica"),
             pytest.param("DFW", "YVR", "domestic", id="us_to_canada"),
             pytest.param("DFW", "FCO", "longhaul", id="us_to_italy"),
             pytest.param("DFW", "NRT", "longhaul", id="us_to_japan"),

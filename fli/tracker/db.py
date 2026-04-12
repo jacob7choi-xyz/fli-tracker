@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS routes (
     cabin_class   TEXT NOT NULL DEFAULT 'ECONOMY',
     max_stops     TEXT NOT NULL DEFAULT 'ANY',
     trip_duration INTEGER NOT NULL DEFAULT 7,
-    look_ahead    INTEGER NOT NULL DEFAULT 90,
+    look_ahead    INTEGER NOT NULL DEFAULT 45,
     is_round_trip INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     active        INTEGER NOT NULL DEFAULT 1
@@ -120,11 +120,6 @@ class TrackerDB:
             )
         if "max_price" not in route_cols:
             self._conn.execute("ALTER TABLE routes ADD COLUMN max_price REAL")
-
-        # One-time: reduce look_ahead from 90 to 45 for existing routes
-        self._conn.execute(
-            "UPDATE routes SET look_ahead = 45 WHERE look_ahead = 90"
-        )
 
         self._conn.commit()
 

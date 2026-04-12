@@ -382,6 +382,16 @@ class TestSweep:
         assert mock_scan.call_count == 2
 
     @patch("fli.tracker.scanner.scan_route")
+    def test_sweep_group_filters_all_routes(self, mock_scan, db: TrackerDB):
+        """When group filter matches no routes, sweep scans nothing."""
+        db.add_route(Route(origin="DFW", destination="FCO"))  # longhaul
+        db.add_route(Route(origin="JFK", destination="LHR"))  # longhaul
+
+        total = sweep(db, group="domestic")
+        assert total == 0
+        mock_scan.assert_not_called()
+
+    @patch("fli.tracker.scanner.scan_route")
     def test_sweep_continues_on_scan_exception(self, mock_scan, db: TrackerDB):
         """If scan_route raises an exception, sweep catches it and continues."""
         route1 = db.add_route(Route(origin="DFW", destination="FCO"))

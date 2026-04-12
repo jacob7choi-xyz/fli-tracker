@@ -35,9 +35,11 @@ def watch(
         fli watch --group domestic
         fli watch --group longhaul
     """
-    if group is not None and group not in ("domestic", "longhaul"):
-        typer.echo(f"Invalid group '{group}'. Use 'domestic' or 'longhaul'.")
-        raise typer.Exit(1)
+    if group is not None:
+        group = group.lower()
+        if group not in ("domestic", "longhaul"):
+            typer.echo(f"Invalid group '{group}'. Use 'domestic' or 'longhaul'.")
+            raise typer.Exit(1)
 
     group_filter: RouteGroup | None = group  # type: ignore[assignment]
 
