@@ -8,6 +8,7 @@ Enriches alerts with flight details (airlines, duration, stops) when possible.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -250,21 +251,30 @@ def _format_perks(airline_codes: list[str]) -> str | None:
     return ", ".join(items) if items else None
 
 
-def _format_flight_result(flight: FlightResult, label: str) -> list[str]:
-    """Format a single FlightResult into display lines."""
+@dataclass
+class LegDetail:
+    """Structured flight leg data for rendering."""
+
+    label: str
+    airlines: str
+    duration: str
+    stops: str
+    dep_time: str
+    arr_time: str
+    perks: str | None
+
+
+def _extract_leg_detail(flight: FlightResult, label: str) -> LegDetail:
+    """Extract structured data from a FlightResult."""
     hours, mins = divmod(flight.duration, 60)
     duration_str = f"{hours}h {mins}m" if mins else f"{hours}h"
 
     airlines = []
-    seen = set()
+    seen: set[str] = set()
     for leg in flight.legs:
         if leg.airline.name not in seen:
             airlines.append(leg.airline.name)
             seen.add(leg.airline.name)
-    airline_str = ", ".join(airlines)
-
-    dep_time = flight.legs[0].departure_datetime.strftime("%I:%M %p")
-    arr_time = flight.legs[-1].arrival_datetime.strftime("%I:%M %p")
 
     if flight.stops == 0:
         stop_str = "Nonstop"
@@ -272,26 +282,23 @@ def _format_flight_result(flight: FlightResult, label: str) -> list[str]:
         s = "s" if flight.stops > 1 else ""
         stop_str = f"{flight.stops} stop{s}"
 
-    lines = [
-        f"  {label}:",
-        f"    Airlines: {airline_str}",
-        f"    Duration: {duration_str} ({stop_str})",
-        f"    Times: {dep_time} -> {arr_time}",
-    ]
-
-    perks = _format_perks(airlines)
-    if perks:
-        lines.append(f"    Perks: {perks}")
-
-    return lines
+    return LegDetail(
+        label=label,
+        airlines=", ".join(airlines),
+        duration=duration_str,
+        stops=stop_str,
+        dep_time=flight.legs[0].departure_datetime.strftime("%I:%M %p"),
+        arr_time=flight.legs[-1].arrival_datetime.strftime("%I:%M %p"),
+        perks=_format_perks(airlines),
+    )
 
 
-def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
-    """Fetch flight details for a triggered alert.
+def fetch_flight_details(trigger: AlertTrigger) -> list[LegDetail]:
+    """Fetch structured flight details for a triggered alert.
 
-    Runs a SearchFlights query for the specific departure date to get
-    airline, duration, and stop details for both outbound and return.
-    Returns a formatted string or None if the lookup fails.
+    Runs a SearchFlights query for the specific departure date.
+    Returns a list of LegDetail (outbound + optional return),
+    or an empty list if the lookup fails.
     """
     try:
         from fli.core.builders import build_flight_segments
@@ -328,23 +335,19 @@ def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
 
         results = SearchFlights().search(filters)
         if not results:
-            return None
+            return []
 
         first = results[0]
-        lines = []
+        legs: list[LegDetail] = []
 
         if isinstance(first, tuple):
-            # Round-trip: tuple of (outbound, return)
-            outbound = first[0]
-            lines.extend(_format_flight_result(outbound, "Outbound"))
+            legs.append(_extract_leg_detail(first[0], "Outbound"))
             if len(first) > 1:
-                ret = first[1]
-                lines.extend(_format_flight_result(ret, "Return"))
+                legs.append(_extract_leg_detail(first[1], "Return"))
         else:
-            # One-way
-            lines.extend(_format_flight_result(first, "Flight"))
+            legs.append(_extract_leg_detail(first, "Flight"))
 
-        return "\n".join(lines)
+        return legs
 
     except Exception:
         logger.debug(
@@ -352,7 +355,39 @@ def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
             trigger.route.origin,
             trigger.route.destination,
         )
-        return None
+        return []
+
+
+def _render_legs_text(legs: list[LegDetail]) -> str:
+    """Render flight leg details as plain text."""
+    lines = []
+    for leg in legs:
+        lines.append(f"  {leg.label}:")
+        lines.append(f"    Airlines: {leg.airlines}")
+        lines.append(f"    Duration: {leg.duration} ({leg.stops})")
+        lines.append(f"    Times: {leg.dep_time} -> {leg.arr_time}")
+        if leg.perks:
+            lines.append(f"    Perks: {leg.perks}")
+    return "\n".join(lines)
+
+
+def _render_legs_html(legs: list[LegDetail]) -> str:
+    """Render flight leg details as HTML for digest emails."""
+    parts = []
+    for leg in legs:
+        perks_html = (
+            f'<div style="font-size:12px;color:#888;margin-top:2px;">'
+            f'{leg.perks}</div>'
+            if leg.perks else ""
+        )
+        parts.append(
+            f'<div style="margin-top:6px;font-size:13px;">'
+            f'<strong>{leg.label}:</strong> {leg.airlines}<br>'
+            f'{leg.duration} ({leg.stops}) &middot; '
+            f'{leg.dep_time} - {leg.arr_time}'
+            f'{perks_html}</div>'
+        )
+    return "".join(parts)
 
 
 def format_message(
@@ -412,9 +447,9 @@ def format_message(
     lines.append(f"Deal quality: {deal}")
 
     # Flight details (airlines, duration, times)
-    details = _fetch_flight_details(trigger)
-    if details:
-        lines.append(details)
+    legs = fetch_flight_details(trigger)
+    if legs:
+        lines.append(_render_legs_text(legs))
     else:
         lines.append(f"Cabin: {route.cabin_class}, Stops: {route.max_stops}")
 
@@ -596,6 +631,10 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         orig_city = _AIRPORT_LOCATIONS.get(route.origin, route.origin)
         dest_city_label = _AIRPORT_LOCATIONS.get(route.destination, route.destination)
 
+        # Fetch real flight details (airline, duration, stops)
+        legs = fetch_flight_details(trigger)
+        flight_html = _render_legs_html(legs) if legs else ""
+
         block = (
             f'<div style="margin-bottom:20px;padding:12px;'
             f'border-left:3px solid #4a90d9;background:#f8f9fa;">'
@@ -608,6 +647,7 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
             f'<div style="font-size:14px;">{date_str}</div>'
             f'<div style="font-size:13px;color:#666;margin:4px 0;">'
             f'{alert_label}</div>'
+            f'{flight_html}'
             f'<div style="margin-top:8px;">'
             f'<a href="{search_url}" style="color:#1a73e8;">'
             f'Book on Google Flights</a></div>'

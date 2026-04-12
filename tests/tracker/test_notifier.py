@@ -13,6 +13,7 @@ from fli.tracker.db import TrackerDB
 from fli.tracker.detector import AlertTrigger
 from fli.tracker.models import Alert, AlertType, MonthlyStats, PriceSnapshot, Route, RouteStats
 from fli.tracker.notifier import (
+    LegDetail,
     _build_search_url,
     _build_title,
     _compute_nights,
@@ -252,7 +253,7 @@ class TestAirlinePerks:
 class TestFormatMessage:
     """Tests for notification message formatting."""
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_drop_message_format(self, _mock_details):
         trigger = _make_trigger(
             alert_type=AlertType.DROP,
@@ -270,7 +271,7 @@ class TestFormatMessage:
         assert "New all-time low" in msg
         assert "Book now:" in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_threshold_message_format(self, _mock_details):
         trigger = _make_trigger(
             alert_type=AlertType.THRESHOLD,
@@ -286,7 +287,7 @@ class TestFormatMessage:
         assert "Threshold" in msg
         assert "Threshold hit" in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_one_way_message_no_return(self, _mock_details):
         trigger = _make_trigger(return_date=None)
         msg = format_message(trigger)
@@ -294,7 +295,7 @@ class TestFormatMessage:
         assert "one-way" in msg
         assert "Departure: 2026-07-15" in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_round_trip_includes_dates_and_nights(self, _mock_details):
         trigger = _make_trigger(return_date="2026-07-22")
         msg = format_message(trigger)
@@ -302,7 +303,7 @@ class TestFormatMessage:
         assert "2026-07-15 -> 2026-07-22" in msg
         assert "7 nights" in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_fallback_shows_cabin_and_stops(self, _mock_details):
         """When flight details are unavailable, shows cabin and stops from route."""
         trigger = _make_trigger()
@@ -312,19 +313,19 @@ class TestFormatMessage:
         assert "ANY" in msg
 
     @patch(
-        "fli.tracker.notifier._fetch_flight_details",
-        return_value=(
-            "  Outbound:\n"
-            "    Airlines: AA\n"
-            "    Duration: 10h 25m (Nonstop)\n"
-            "    Times: 06:40 PM -> 12:05 PM\n"
-            "    Perks: Free carry-on, Paid checked bag\n"
-            "  Return:\n"
-            "    Airlines: AA\n"
-            "    Duration: 11h 10m (Nonstop)\n"
-            "    Times: 01:30 PM -> 06:40 PM\n"
-            "    Perks: Free carry-on, Paid checked bag"
-        ),
+        "fli.tracker.notifier.fetch_flight_details",
+        return_value=[
+            LegDetail(
+                label="Outbound", airlines="AA", duration="10h 25m",
+                stops="Nonstop", dep_time="06:40 PM", arr_time="12:05 PM",
+                perks="Free carry-on, Paid checked bag",
+            ),
+            LegDetail(
+                label="Return", airlines="AA", duration="11h 10m",
+                stops="Nonstop", dep_time="01:30 PM", arr_time="06:40 PM",
+                perks="Free carry-on, Paid checked bag",
+            ),
+        ],
     )
     def test_with_flight_details(self, _mock_details):
         """When flight details are available, shows both legs with perks."""
@@ -340,14 +341,14 @@ class TestFormatMessage:
         assert "Free carry-on" in msg
         assert "ECONOMY" not in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_deal_quality_in_message(self, _mock_details):
         trigger = _make_trigger(price=450.0, destination="FCO")
         stats = _make_stats(overall_median=700.0, all_time_min=400.0)
         msg = format_message(trigger, _stats=stats)
         assert "Deal quality:" in msg
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     def test_search_link_in_message(self, _mock_details):
         trigger = _make_trigger()
         msg = format_message(trigger)
@@ -362,7 +363,7 @@ class TestFormatMessage:
 class TestSendNotification:
     """Tests for notification delivery and logging."""
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
     def test_successful_send(self, mock_apprise_mod, _mock_details, db: TrackerDB):
@@ -387,7 +388,7 @@ class TestSendNotification:
         mock_ap.add.assert_called_once_with("test://url")
         mock_ap.notify.assert_called_once()
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
     def test_failed_send_still_logs(self, mock_apprise_mod, _mock_details, db: TrackerDB):
@@ -412,7 +413,7 @@ class TestSendNotification:
         # Notification should still be logged for dedup
         assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
 
-    @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
     def test_logs_notification_record(self, mock_apprise_mod, _mock_details, db: TrackerDB):
