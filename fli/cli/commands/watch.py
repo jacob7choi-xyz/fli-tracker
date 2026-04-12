@@ -50,10 +50,13 @@ def watch(
             snapshots = scan_route(route)
 
             if snapshots:
+                # Check alerts BEFORE inserting so get_min_price
+                # reflects the previous low, not the current scan
+                triggers = check_alerts(db, route, snapshots)
+
                 db.add_snapshots(snapshots)
                 typer.echo(f"Stored {len(snapshots)} price snapshots")
 
-                triggers = check_alerts(db, route, snapshots)
                 if triggers:
                     sent = notify_all(triggers, db)
                     typer.echo(f"Sent {sent}/{len(triggers)} notifications")
@@ -80,11 +83,14 @@ def watch(
                 snapshots = scan_route(route)
 
                 if snapshots:
+                    # Check alerts BEFORE inserting so get_min_price
+                    # reflects the previous low, not the current scan
+                    triggers = check_alerts(db, route, snapshots)
+
                     db.add_snapshots(snapshots)
                     total_snapshots += len(snapshots)
                     typer.echo(f" {len(snapshots)} prices", nl=False)
 
-                    triggers = check_alerts(db, route, snapshots)
                     if triggers:
                         sent = notify_all(triggers, db)
                         total_triggers += len(triggers)
