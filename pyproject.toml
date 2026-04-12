@@ -41,8 +41,12 @@ mcp = [
     "pydantic-settings>=2.0.0",
     "uvicorn>=0.34.0",
 ]
+tracker = [
+    "apprise>=1.9.0",
+]
 all = [
     "flights[mcp]",
+    "flights[tracker]",
 ]
 dev = [
     "mkdocs-material[imaging]>=9.5.49",
