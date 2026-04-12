@@ -272,9 +272,9 @@ def _extract_leg_detail(flight: FlightResult, label: str) -> LegDetail:
     airlines = []
     seen: set[str] = set()
     for leg in flight.legs:
-        if leg.airline.name not in seen:
-            airlines.append(leg.airline.name)
-            seen.add(leg.airline.name)
+        if leg.airline.value not in seen:
+            airlines.append(leg.airline.value)
+            seen.add(leg.airline.value)
 
     if flight.stops == 0:
         stop_str = "Nonstop"
