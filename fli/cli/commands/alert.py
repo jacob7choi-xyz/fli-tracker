@@ -41,7 +41,7 @@ def alert_add(
         fli alert add 1 --drop --notify "discord://webhook_id/webhook_token"
 
     """
-    if not below and not drop:
+    if below is None and not drop:
         typer.echo("Error: Specify --below <price> or --drop (or both)")
         raise typer.Exit(1)
 
@@ -135,9 +135,11 @@ def alert_remove(
 ):
     """Remove an alert."""
     db = _get_db()
-    if db.remove_alert(alert_id):
-        typer.echo(f"Removed alert {alert_id}")
-    else:
-        typer.echo(f"Alert {alert_id} not found")
-        raise typer.Exit(1)
-    db.close()
+    try:
+        if db.remove_alert(alert_id):
+            typer.echo(f"Removed alert {alert_id}")
+        else:
+            typer.echo(f"Alert {alert_id} not found")
+            raise typer.Exit(1)
+    finally:
+        db.close()

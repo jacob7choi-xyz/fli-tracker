@@ -5,9 +5,15 @@ Logs every sent notification to the tracker database for deduplication.
 Enriches alerts with flight details (airlines, duration, stops) when possible.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from fli.models import FlightResult
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import AlertTrigger
@@ -43,6 +49,8 @@ _REGION_MAP: dict[str, str] = {
     "SAN": "domestic", "IAD": "domestic", "DTW": "domestic", "MSP": "domestic",
     "EWR": "domestic", "CLT": "domestic", "SLC": "domestic", "PDX": "domestic",
     "TPA": "domestic", "AUS": "domestic", "BNA": "domestic", "RDU": "domestic",
+    "DFW": "domestic", "DCA": "domestic", "BWI": "domestic", "MSY": "domestic",
+    "HOU": "domestic",
     # Mexico / Central America / Caribbean / South America
     "CUN": "near_intl", "MEX": "near_intl", "SAL": "near_intl", "GUA": "near_intl",
     "SJO": "near_intl", "LIR": "near_intl", "MID": "near_intl", "MTY": "near_intl",
@@ -143,6 +151,8 @@ _AIRLINE_PERKS: dict[str, dict[str, bool | None]] = {
     "AV": {"carry_on": True, "checked_bag": True, "seat_selection": False},
     "AC": {"carry_on": True, "checked_bag": True, "seat_selection": False},
     "WS": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    # US hybrid / other
+    "WN": {"carry_on": True, "checked_bag": True, "seat_selection": False},
     # Latin America budget / hybrid
     "VB": {"carry_on": False, "checked_bag": False, "seat_selection": False},
     "Y4": {"carry_on": False, "checked_bag": False, "seat_selection": False},
@@ -173,7 +183,7 @@ def _format_perks(airline_codes: list[str]) -> str | None:
     return ", ".join(items) if items else None
 
 
-def _format_flight_result(flight, label: str) -> list[str]:
+def _format_flight_result(flight: FlightResult, label: str) -> list[str]:
     """Format a single FlightResult into display lines."""
     hours, mins = divmod(flight.duration, 60)
     duration_str = f"{hours}h {mins}m" if mins else f"{hours}h"
@@ -307,8 +317,16 @@ def format_message(trigger: AlertTrigger) -> str:
 
     # Drop or threshold context
     if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
-        drop_pct = (1 - snap.price / trigger.previous_low) * 100
-        lines.append(f"Previous low: ${trigger.previous_low:.0f} RT (down {drop_pct:.1f}%)")
+        if trigger.previous_low > 0:
+            drop_pct = (1 - snap.price / trigger.previous_low) * 100
+            rt_label = " RT" if snap.return_date else ""
+            lines.append(
+                f"Previous low: ${trigger.previous_low:.0f}{rt_label}"
+                f" (down {drop_pct:.1f}%)"
+            )
+        else:
+            rt_label = " RT" if snap.return_date else ""
+            lines.append(f"Previous low: ${trigger.previous_low:.0f}{rt_label}")
     elif trigger.alert.alert_type == AlertType.THRESHOLD and trigger.alert.threshold is not None:
         lines.append(f"Threshold: ${trigger.alert.threshold:.0f}")
 

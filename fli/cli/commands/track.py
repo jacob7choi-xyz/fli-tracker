@@ -122,12 +122,14 @@ def track_remove(
 ):
     """Remove a tracked route and all its data."""
     db = _get_db()
-    if db.remove_route(route_id):
-        typer.echo(f"Removed route {route_id}")
-    else:
-        typer.echo(f"Route {route_id} not found")
-        raise typer.Exit(1)
-    db.close()
+    try:
+        if db.remove_route(route_id):
+            typer.echo(f"Removed route {route_id}")
+        else:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
+    finally:
+        db.close()
 
 
 @track_app.command(name="pause")
@@ -136,12 +138,14 @@ def track_pause(
 ):
     """Pause a tracked route (skip during sweeps)."""
     db = _get_db()
-    if db.set_route_active(route_id, False):
-        typer.echo(f"Paused route {route_id}")
-    else:
-        typer.echo(f"Route {route_id} not found")
-        raise typer.Exit(1)
-    db.close()
+    try:
+        if db.set_route_active(route_id, False):
+            typer.echo(f"Paused route {route_id}")
+        else:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
+    finally:
+        db.close()
 
 
 @track_app.command(name="resume")
@@ -150,9 +154,11 @@ def track_resume(
 ):
     """Resume a paused route."""
     db = _get_db()
-    if db.set_route_active(route_id, True):
-        typer.echo(f"Resumed route {route_id}")
-    else:
-        typer.echo(f"Route {route_id} not found")
-        raise typer.Exit(1)
-    db.close()
+    try:
+        if db.set_route_active(route_id, True):
+            typer.echo(f"Resumed route {route_id}")
+        else:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
+    finally:
+        db.close()

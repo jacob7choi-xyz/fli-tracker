@@ -25,14 +25,18 @@ def history(
 ):
     """Show price history for a tracked route."""
     db = TrackerDB()
-    route = db.get_route(route_id)
+    try:
+        route = db.get_route(route_id)
 
-    if route is None:
-        typer.echo(f"Route {route_id} not found")
-        raise typer.Exit(1)
+        if route is None:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
 
-    snapshots = db.get_snapshots(route_id, departure_date=departure_date, limit=limit)
-    db.close()
+        snapshots = db.get_snapshots(
+            route_id, departure_date=departure_date, limit=limit
+        )
+    finally:
+        db.close()
 
     if not snapshots:
         typer.echo(f"No price history for route {route_id} ({route.origin} -> {route.destination})")

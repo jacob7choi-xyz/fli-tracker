@@ -116,7 +116,16 @@ def sweep(db: TrackerDB) -> int:
     total = 0
     for route in routes:
         logger.info("Scanning route %d: %s -> %s", route.id, route.origin, route.destination)
-        snapshots = scan_route(route)
+        try:
+            snapshots = scan_route(route)
+        except Exception:
+            logger.exception(
+                "Failed to scan route %d: %s -> %s",
+                route.id,
+                route.origin,
+                route.destination,
+            )
+            continue
         if snapshots:
             count = db.add_snapshots(snapshots)
             total += count
