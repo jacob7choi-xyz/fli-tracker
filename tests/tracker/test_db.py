@@ -117,6 +117,20 @@ class TestRoutes:
     def test_set_route_active_nonexistent(self, db: TrackerDB):
         assert db.set_route_active(999, True) is False
 
+    def test_update_route_max_price(self, db_with_route: tuple[TrackerDB, Route]):
+        db, route = db_with_route
+        assert route.max_price is None
+        assert db.update_route_max_price(route.id, 550.0) is True
+        fetched = db.get_route(route.id)
+        assert fetched.max_price == 550.0
+        # Clear it back to None
+        assert db.update_route_max_price(route.id, None) is True
+        fetched = db.get_route(route.id)
+        assert fetched.max_price is None
+
+    def test_update_route_max_price_nonexistent(self, db: TrackerDB):
+        assert db.update_route_max_price(999, 500.0) is False
+
     def test_remove_route(self, db_with_route: tuple[TrackerDB, Route]):
         db, route = db_with_route
         assert db.remove_route(route.id) is True

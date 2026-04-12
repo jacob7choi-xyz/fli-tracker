@@ -41,14 +41,21 @@ _MIN_DECILE_SAMPLES = 20
 # Peak travel months (higher scores for cheap fares in expensive seasons)
 _PEAK_MONTHS = {6, 7, 8, 12}
 
-def _load_airport_locations() -> dict[str, str]:
-    """Load airport city/location labels from data/airport_locations.csv.
+_DOMESTIC_COUNTRIES = {"US", "Puerto Rico"}
 
-    Returns a dict mapping IATA code to a display label like
-    "Dallas-Fort Worth, TX" (domestic) or "Rome, Italy" (international).
+
+def _load_airport_data() -> tuple[dict[str, str], dict[str, str]]:
+    """Load airport metadata from data/airport_locations.csv.
+
+    Returns:
+        A tuple of (locations, countries) where:
+        - locations maps IATA code to display label ("Dallas-Fort Worth, TX")
+        - countries maps IATA code to country string ("US", "Japan", etc.)
+
     """
     csv_path = Path(__file__).resolve().parent.parent.parent / "data" / "airport_locations.csv"
     locations: dict[str, str] = {}
+    countries: dict[str, str] = {}
     try:
         with open(csv_path) as f:
             import csv
@@ -59,6 +66,8 @@ def _load_airport_locations() -> dict[str, str]:
                 city = row["city"].strip()
                 region = row.get("region", "").strip()
                 country = row.get("country", "").strip()
+                if country:
+                    countries[code] = country
                 if country == "US" and region:
                     locations[code] = f"{city}, {region}"
                 elif country:
@@ -67,10 +76,17 @@ def _load_airport_locations() -> dict[str, str]:
                     locations[code] = city
     except FileNotFoundError:
         logger.warning("Airport locations file not found: %s", csv_path)
-    return locations
+    return locations, countries
 
 
-_AIRPORT_LOCATIONS: dict[str, str] = _load_airport_locations()
+_AIRPORT_LOCATIONS, _AIRPORT_COUNTRIES = _load_airport_data()
+
+
+def _is_domestic_route(origin: str, destination: str) -> bool:
+    """Check if both airports are in the US or Puerto Rico."""
+    orig_country = _AIRPORT_COUNTRIES.get(origin, "")
+    dest_country = _AIRPORT_COUNTRIES.get(destination, "")
+    return orig_country in _DOMESTIC_COUNTRIES and dest_country in _DOMESTIC_COUNTRIES
 
 
 def _format_route_label(origin: str, destination: str) -> str:
@@ -546,19 +562,96 @@ def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     return sent
 
 
+def _render_trigger_block(
+    trigger: AlertTrigger, index: int, db: TrackerDB,
+) -> str:
+    """Render a single trigger as an HTML card block for the digest."""
+    route = trigger.route
+    snap = trigger.snapshot
+    stats = db.get_route_stats(route.id)
+
+    # Deal rating
+    departure_month = None
+    try:
+        departure_month = int(snap.departure_date.split("-")[1])
+    except (IndexError, ValueError):
+        pass
+    deal = _score_deal(snap.price, stats, departure_month)
+
+    # Price
+    price_str = f"${snap.price:.0f} RT" if snap.return_date else f"${snap.price:.0f}"
+
+    # Dates
+    if snap.return_date:
+        nights = _compute_nights(snap.departure_date, snap.return_date)
+        nights_str = f" ({nights}n)" if nights else ""
+        date_str = f"{snap.departure_date} -> {snap.return_date}{nights_str}"
+    else:
+        date_str = f"{snap.departure_date} (one-way)"
+
+    # Alert type label
+    if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
+        if trigger.previous_low > 0:
+            drop_pct = (1 - snap.price / trigger.previous_low) * 100
+            alert_label = (
+                f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
+            )
+        else:
+            alert_label = f"New low (was ${trigger.previous_low:.0f})"
+    elif (
+        trigger.alert.alert_type == AlertType.THRESHOLD
+        and trigger.alert.threshold is not None
+    ):
+        alert_label = f"Below ${trigger.alert.threshold:.0f} threshold"
+    else:
+        alert_label = "Alert triggered"
+
+    # Search link
+    search_url = _build_search_url(
+        route.origin, route.destination, snap.departure_date, snap.return_date
+    )
+
+    # Route label with city names
+    orig_city = _AIRPORT_LOCATIONS.get(route.origin, route.origin)
+    dest_city_label = _AIRPORT_LOCATIONS.get(route.destination, route.destination)
+
+    # Fetch real flight details (airline, duration, stops)
+    legs = fetch_flight_details(trigger)
+    flight_html = _render_legs_html(legs) if legs else ""
+
+    return (
+        f'<div style="margin-bottom:20px;padding:12px;'
+        f'border-left:3px solid #4a90d9;background:#f8f9fa;">'
+        f'<div style="font-size:16px;font-weight:bold;">'
+        f'{index}. {route.origin} -> {route.destination}</div>'
+        f'<div style="font-size:13px;color:#666;">'
+        f'{orig_city} -> {dest_city_label}</div>'
+        f'<div style="font-size:20px;font-weight:bold;margin:8px 0;">'
+        f'{price_str} &middot; {deal}</div>'
+        f'<div style="font-size:14px;">{date_str}</div>'
+        f'<div style="font-size:13px;color:#666;margin:4px 0;">'
+        f'{alert_label}</div>'
+        f'{flight_html}'
+        f'<div style="margin-top:8px;">'
+        f'<a href="{search_url}" style="color:#1a73e8;">'
+        f'Book on Google Flights</a></div>'
+        f'</div>'
+    )
+
+
 def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
     """Format multiple alert triggers into a single digest email body.
 
-    Triggers are sorted by deal significance: drops before thresholds,
-    then by price ascending. Each deal gets a compact block with route,
-    dates, price, drop context, and deal rating.
+    Triggers are split into Domestic and International sections.
+    Within each section, drops appear before thresholds, then sorted
+    by price ascending.
 
     Args:
         triggers: All triggers from a single sweep.
         db: Tracker database for fetching route stats.
 
     Returns:
-        Formatted digest string.
+        Formatted HTML digest string.
 
     """
     # Sort: drops first, then by price ascending
@@ -579,86 +672,44 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
     else:
         summary = "No deals"
 
-    # Build HTML for reliable mobile rendering
-    blocks = []
-    for i, trigger in enumerate(sorted_triggers, 1):
-        route = trigger.route
-        snap = trigger.snapshot
-        stats = db.get_route_stats(route.id)
+    # Split into domestic and international
+    domestic = [
+        t for t in sorted_triggers
+        if _is_domestic_route(t.route.origin, t.route.destination)
+    ]
+    international = [
+        t for t in sorted_triggers
+        if not _is_domestic_route(t.route.origin, t.route.destination)
+    ]
 
-        # Deal rating
-        departure_month = None
-        try:
-            departure_month = int(snap.departure_date.split("-")[1])
-        except (IndexError, ValueError):
-            pass
-        deal = _score_deal(snap.price, stats, departure_month)
+    # Render sections with continuous numbering
+    sections = []
+    counter = 1
 
-        # Price
-        price_str = f"${snap.price:.0f} RT" if snap.return_date else f"${snap.price:.0f}"
-
-        # Dates
-        if snap.return_date:
-            nights = _compute_nights(snap.departure_date, snap.return_date)
-            nights_str = f" ({nights}n)" if nights else ""
-            date_str = f"{snap.departure_date} -> {snap.return_date}{nights_str}"
-        else:
-            date_str = f"{snap.departure_date} (one-way)"
-
-        # Alert type label
-        if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
-            if trigger.previous_low > 0:
-                drop_pct = (1 - snap.price / trigger.previous_low) * 100
-                alert_label = (
-                    f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
-                )
-            else:
-                alert_label = f"New low (was ${trigger.previous_low:.0f})"
-        elif (
-            trigger.alert.alert_type == AlertType.THRESHOLD
-            and trigger.alert.threshold is not None
-        ):
-            alert_label = f"Below ${trigger.alert.threshold:.0f} threshold"
-        else:
-            alert_label = "Alert triggered"
-
-        # Search link
-        search_url = _build_search_url(
-            route.origin, route.destination, snap.departure_date, snap.return_date
+    if domestic:
+        blocks = []
+        for trigger in domestic:
+            blocks.append(_render_trigger_block(trigger, counter, db))
+            counter += 1
+        sections.append(
+            f'<h3 style="margin:16px 0 8px;color:#333;">Domestic Deals</h3>'
+            f'{"".join(blocks)}'
         )
 
-        # Route label with city names
-        orig_city = _AIRPORT_LOCATIONS.get(route.origin, route.origin)
-        dest_city_label = _AIRPORT_LOCATIONS.get(route.destination, route.destination)
-
-        # Fetch real flight details (airline, duration, stops)
-        legs = fetch_flight_details(trigger)
-        flight_html = _render_legs_html(legs) if legs else ""
-
-        block = (
-            f'<div style="margin-bottom:20px;padding:12px;'
-            f'border-left:3px solid #4a90d9;background:#f8f9fa;">'
-            f'<div style="font-size:16px;font-weight:bold;">'
-            f'{i}. {route.origin} -> {route.destination}</div>'
-            f'<div style="font-size:13px;color:#666;">'
-            f'{orig_city} -> {dest_city_label}</div>'
-            f'<div style="font-size:20px;font-weight:bold;margin:8px 0;">'
-            f'{price_str} &middot; {deal}</div>'
-            f'<div style="font-size:14px;">{date_str}</div>'
-            f'<div style="font-size:13px;color:#666;margin:4px 0;">'
-            f'{alert_label}</div>'
-            f'{flight_html}'
-            f'<div style="margin-top:8px;">'
-            f'<a href="{search_url}" style="color:#1a73e8;">'
-            f'Book on Google Flights</a></div>'
-            f'</div>'
+    if international:
+        blocks = []
+        for trigger in international:
+            blocks.append(_render_trigger_block(trigger, counter, db))
+            counter += 1
+        sections.append(
+            f'<h3 style="margin:16px 0 8px;color:#333;">International Deals</h3>'
+            f'{"".join(blocks)}'
         )
-        blocks.append(block)
 
     body = (
         f'<div style="font-family:sans-serif;max-width:600px;margin:0 auto;">'
         f'<h2 style="margin-bottom:16px;">{summary}</h2>'
-        f'{"".join(blocks)}'
+        f'{"".join(sections)}'
         f'</div>'
     )
     return body

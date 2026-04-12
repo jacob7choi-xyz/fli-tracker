@@ -172,6 +172,15 @@ class TrackerDB:
             rows = self._conn.execute("SELECT * FROM routes").fetchall()
         return [self._row_to_route(r) for r in rows]
 
+    def update_route_max_price(self, route_id: int, max_price: float | None) -> bool:
+        """Update the max_price cap for a route. Returns True if the row existed."""
+        cur = self._conn.execute(
+            "UPDATE routes SET max_price = ? WHERE id = ?",
+            (max_price, route_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def set_route_active(self, route_id: int, active: bool) -> bool:
         """Activate or deactivate a route. Returns True if the row existed."""
         cur = self._conn.execute(

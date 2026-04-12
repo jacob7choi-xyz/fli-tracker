@@ -18,6 +18,7 @@ from fli.tracker.notifier import (
     _build_title,
     _compute_nights,
     _format_perks,
+    _is_domestic_route,
     _score_deal,
     format_digest,
     format_message,
@@ -609,6 +610,52 @@ class TestFormatDigest:
         # Should have some deal label (Building history... since no stats)
         assert "Building history..." in body
 
+    def test_domestic_and_international_sections(self, db: TrackerDB):
+        """Digest splits triggers into Domestic and International sections."""
+        dom_route = db.add_route(Route(origin="DFW", destination="ORD"))
+        db.add_alert(
+            Alert(route_id=dom_route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
+        intl_route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(route_id=intl_route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
+        dom_trigger = _make_trigger(
+            price=100.0, route_id=dom_route.id, origin="DFW", destination="ORD",
+        )
+        intl_trigger = _make_trigger(
+            price=500.0, route_id=intl_route.id, origin="DFW", destination="FCO",
+        )
+        body = format_digest([dom_trigger, intl_trigger], db)
+        assert "Domestic Deals" in body
+        assert "International Deals" in body
+        # Domestic section appears before International
+        assert body.index("Domestic Deals") < body.index("International Deals")
+
+    def test_only_domestic_no_international_header(self, db: TrackerDB):
+        """When all triggers are domestic, no International header appears."""
+        route = db.add_route(Route(origin="DFW", destination="ORD"))
+        db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
+        trigger = _make_trigger(
+            price=100.0, route_id=route.id, origin="DFW", destination="ORD",
+        )
+        body = format_digest([trigger], db)
+        assert "Domestic Deals" in body
+        assert "International Deals" not in body
+
+    def test_only_international_no_domestic_header(self, db: TrackerDB):
+        """When all triggers are international, no Domestic header appears."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
+        trigger = _make_trigger(route_id=route.id)
+        body = format_digest([trigger], db)
+        assert "International Deals" in body
+        assert "Domestic Deals" not in body
+
     def test_empty_triggers_returns_header_only(self, db: TrackerDB):
         body = format_digest([], db)
         assert "No deals" in body
@@ -713,6 +760,26 @@ class TestSendDigest:
         """If all triggers exceed max_price, nothing is sent."""
         trigger = _make_trigger(price=1000.0, max_price=800.0)
         assert send_digest([trigger], db) == 0
+
+
+class TestIsDomesticRoute:
+    """Tests for domestic/international route classification."""
+
+    @pytest.mark.parametrize(
+        ("origin", "destination", "expected"),
+        [
+            pytest.param("DFW", "ORD", True, id="us_to_us"),
+            pytest.param("DFW", "SJU", True, id="us_to_puerto_rico"),
+            pytest.param("SJU", "JFK", True, id="puerto_rico_to_us"),
+            pytest.param("DFW", "FCO", False, id="us_to_italy"),
+            pytest.param("DFW", "CUN", False, id="us_to_mexico"),
+            pytest.param("LHR", "CDG", False, id="uk_to_france"),
+            pytest.param("ZZZ", "DFW", False, id="unknown_origin"),
+            pytest.param("DFW", "ZZZ", False, id="unknown_destination"),
+        ],
+    )
+    def test_classification(self, origin, destination, expected):
+        assert _is_domestic_route(origin, destination) is expected
 
 
 class TestAirportLocations:
