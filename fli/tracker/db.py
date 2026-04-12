@@ -478,15 +478,3 @@ class TrackerDB:
                 (alert_id, departure_date, price),
             ).fetchone()
         return row is not None
-
-    @staticmethod
-    def _row_to_notification(row: sqlite3.Row) -> NotificationRecord:
-        return NotificationRecord(
-            id=row["id"],
-            alert_id=row["alert_id"],
-            departure_date=row["departure_date"],
-            return_date=row["return_date"],
-            price=row["price"],
-            message=row["message"],
-            sent_at=datetime.fromisoformat(row["sent_at"]),
-        )

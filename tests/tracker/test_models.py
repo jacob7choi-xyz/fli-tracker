@@ -45,6 +45,18 @@ class TestRoute:
         with pytest.raises(ValidationError):
             Route(origin="DFW", destination="FCO", durations=[0])
 
+    def test_durations_cannot_be_empty(self):
+        with pytest.raises(ValidationError):
+            Route(origin="DFW", destination="FCO", durations=[])
+
+    def test_max_price_cannot_be_negative(self):
+        with pytest.raises(ValidationError):
+            Route(origin="DFW", destination="FCO", max_price=-1.0)
+
+    def test_max_price_zero_is_valid(self):
+        route = Route(origin="DFW", destination="FCO", max_price=0.0)
+        assert route.max_price == 0.0
+
     def test_look_ahead_must_be_positive(self):
         with pytest.raises(ValidationError):
             Route(origin="DFW", destination="FCO", look_ahead=0)

@@ -285,12 +285,14 @@ def _extract_leg_detail(flight: FlightResult, label: str) -> LegDetail:
     hours, mins = divmod(flight.duration, 60)
     duration_str = f"{hours}h {mins}m" if mins else f"{hours}h"
 
-    airlines = []
+    airline_names = []
+    airline_codes = []
     seen: set[str] = set()
     for leg in flight.legs:
-        if leg.airline.value not in seen:
-            airlines.append(leg.airline.value)
-            seen.add(leg.airline.value)
+        if leg.airline.name not in seen:
+            airline_names.append(leg.airline.value)
+            airline_codes.append(leg.airline.name)
+            seen.add(leg.airline.name)
 
     if flight.stops == 0:
         stop_str = "Nonstop"
@@ -300,12 +302,12 @@ def _extract_leg_detail(flight: FlightResult, label: str) -> LegDetail:
 
     return LegDetail(
         label=label,
-        airlines=", ".join(airlines),
+        airlines=", ".join(airline_names),
         duration=duration_str,
         stops=stop_str,
         dep_time=flight.legs[0].departure_datetime.strftime("%I:%M %p"),
         arr_time=flight.legs[-1].arrival_datetime.strftime("%I:%M %p"),
-        perks=_format_perks(airlines),
+        perks=_format_perks(airline_codes),
     )
 
 

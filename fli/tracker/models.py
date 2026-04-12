@@ -7,7 +7,9 @@ of rows in the SQLite database.
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 
+from annotated_types import MinLen
 from pydantic import BaseModel, NonNegativeFloat, PositiveInt
 
 
@@ -26,10 +28,10 @@ class Route(BaseModel):
     destination: str
     cabin_class: str = "ECONOMY"
     max_stops: str = "ANY"
-    durations: list[PositiveInt] = [7]
+    durations: Annotated[list[PositiveInt], MinLen(1)] = [7]
     look_ahead: PositiveInt = 90
     is_round_trip: bool = True
-    max_price: float | None = None
+    max_price: NonNegativeFloat | None = None
     created_at: datetime | None = None
     active: bool = True
 

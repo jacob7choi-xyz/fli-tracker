@@ -756,6 +756,30 @@ class TestSendDigest:
         assert sent == 1
         mock_ap.notify.assert_called_once()
 
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_delivery_failure_returns_zero(self, mock_apprise_mod, db: TrackerDB):
+        """When Apprise delivery fails, returns zero but still logs for dedup."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        trigger = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = False
+
+        sent = send_digest([trigger], db)
+
+        assert sent == 0
+        # Still logged for dedup even on failure
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
+
     def test_all_triggers_above_max_price_returns_zero(self, db: TrackerDB):
         """If all triggers exceed max_price, nothing is sent."""
         trigger = _make_trigger(price=1000.0, max_price=800.0)
@@ -809,6 +833,16 @@ class TestAirportLocations:
         label = _format_route_label("ZZZ", "YYY")
         assert "ZZZ" in label
         assert "YYY" in label
+
+    def test_countries_dict_loaded(self):
+        """Airport countries dict is populated alongside locations."""
+        from fli.tracker.notifier import _AIRPORT_COUNTRIES
+
+        assert _AIRPORT_COUNTRIES["DFW"] == "US"
+        assert _AIRPORT_COUNTRIES["SJU"] == "Puerto Rico"
+        assert _AIRPORT_COUNTRIES["FCO"] == "Italy"
+        assert _AIRPORT_COUNTRIES["NRT"] == "Japan"
+        assert _AIRPORT_COUNTRIES["CUN"] == "Mexico"
 
     def test_tracked_airports_have_metadata(self):
         """Every airport in the current tracked routes has location metadata."""

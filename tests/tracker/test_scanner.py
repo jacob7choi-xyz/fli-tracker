@@ -339,3 +339,24 @@ class TestSweep:
         total = sweep(db)
         assert total == 1
         assert mock_scan.call_count == 2
+
+    @patch("fli.tracker.scanner.scan_route")
+    def test_sweep_continues_on_scan_exception(self, mock_scan, db: TrackerDB):
+        """If scan_route raises an exception, sweep catches it and continues."""
+        route1 = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.add_route(Route(origin="JFK", destination="LHR"))
+
+        def side_effect(route):
+            if route.id == route1.id:
+                raise RuntimeError("API timeout")
+            return [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=600.0, currency="USD"
+                )
+            ]
+
+        mock_scan.side_effect = side_effect
+
+        total = sweep(db)
+        assert total == 1
+        assert mock_scan.call_count == 2

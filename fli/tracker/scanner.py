@@ -6,11 +6,13 @@ stores the results in the tracker database.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from fli.core.builders import build_date_search_segments
 from fli.core.parsers import parse_cabin_class, parse_max_stops, resolve_airport
 from fli.models import DateSearchFilters, PassengerInfo, TripType
+from fli.models.airport import Airport
+from fli.models.google_flights.base import MaxStops, SeatType
 from fli.search import SearchDates
 from fli.tracker.db import TrackerDB
 from fli.tracker.models import PriceSnapshot, Route
@@ -21,12 +23,12 @@ logger = logging.getLogger(__name__)
 def _search_duration(
     route: Route,
     duration: int,
-    origin,
-    destination,
-    seat_type,
-    stops,
-    start_date,
-    end_date,
+    origin: Airport,
+    destination: Airport,
+    seat_type: SeatType,
+    stops: MaxStops,
+    start_date: date,
+    end_date: date,
 ) -> list[PriceSnapshot]:
     """Run a single SearchDates call for one duration and return snapshots."""
     segments, trip_type = build_date_search_segments(
