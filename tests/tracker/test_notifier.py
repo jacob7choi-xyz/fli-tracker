@@ -15,6 +15,7 @@ from fli.tracker.models import Alert, AlertType, PriceSnapshot, Route
 from fli.tracker.notifier import (
     _build_search_url,
     _compute_nights,
+    _format_perks,
     _rate_deal,
     format_message,
     notify_all,
@@ -128,6 +129,42 @@ class TestBuildSearchUrl:
 
 
 # ------------------------------------------------------------------
+# Airline perks
+# ------------------------------------------------------------------
+
+
+class TestAirlinePerks:
+    """Tests for airline perks formatting."""
+
+    def test_full_service_us(self):
+        perks = _format_perks(["AA"])
+        assert "Free carry-on" in perks
+        assert "Paid checked bag" in perks
+
+    def test_budget_us(self):
+        perks = _format_perks(["NK"])
+        assert "Paid carry-on" in perks
+        assert "Paid checked bag" in perks
+
+    def test_international_full_service(self):
+        perks = _format_perks(["JL"])
+        assert "Free carry-on" in perks
+        assert "Free checked bag" in perks
+        assert "Free seat selection" in perks
+
+    def test_unknown_airline(self):
+        assert _format_perks(["ZZ"]) is None
+
+    def test_empty_list(self):
+        assert _format_perks([]) is None
+
+    def test_uses_primary_airline(self):
+        """Perks are based on the first (primary) airline."""
+        perks = _format_perks(["DL", "NK"])
+        assert "Free carry-on" in perks
+
+
+# ------------------------------------------------------------------
 # format_message
 # ------------------------------------------------------------------
 
@@ -196,16 +233,31 @@ class TestFormatMessage:
 
     @patch(
         "fli.tracker.notifier._fetch_flight_details",
-        return_value="Airlines: AA\nDuration: 10h 25m (Nonstop)\nTimes: 06:40 PM -> 12:05 PM",
+        return_value=(
+            "  Outbound:\n"
+            "    Airlines: AA\n"
+            "    Duration: 10h 25m (Nonstop)\n"
+            "    Times: 06:40 PM -> 12:05 PM\n"
+            "    Perks: Free carry-on, Paid checked bag\n"
+            "  Return:\n"
+            "    Airlines: AA\n"
+            "    Duration: 11h 10m (Nonstop)\n"
+            "    Times: 01:30 PM -> 06:40 PM\n"
+            "    Perks: Free carry-on, Paid checked bag"
+        ),
     )
     def test_with_flight_details(self, _mock_details):
-        """When flight details are available, shows airlines, duration, times."""
+        """When flight details are available, shows both legs with perks."""
         trigger = _make_trigger()
         msg = format_message(trigger)
 
+        assert "Outbound:" in msg
+        assert "Return:" in msg
         assert "Airlines: AA" in msg
         assert "10h 25m" in msg
         assert "Nonstop" in msg
+        assert "Perks:" in msg
+        assert "Free carry-on" in msg
         assert "ECONOMY" not in msg
 
     @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)

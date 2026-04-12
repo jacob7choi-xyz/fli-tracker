@@ -106,16 +106,123 @@ def _build_search_url(
     return f"https://www.google.com/travel/flights?q={quote(query)}"
 
 
+# Airline perks: carry-on and checked bag policies for economy
+# True = free, False = paid, None = unknown
+_AIRLINE_PERKS: dict[str, dict[str, bool | None]] = {
+    # US full-service
+    "AA": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    "DL": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    "UA": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    "AS": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    "HA": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "B6": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    # US budget
+    "NK": {"carry_on": False, "checked_bag": False, "seat_selection": False},
+    "F9": {"carry_on": False, "checked_bag": False, "seat_selection": False},
+    "G4": {"carry_on": False, "checked_bag": False, "seat_selection": False},
+    # International full-service
+    "BA": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "AF": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "LH": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "KL": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "IB": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "AZ": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "TP": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "KE": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "NH": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "JL": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "OZ": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "TG": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "SQ": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "CX": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "EK": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "QR": {"carry_on": True, "checked_bag": True, "seat_selection": True},
+    "TK": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "AM": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "CM": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "AV": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "AC": {"carry_on": True, "checked_bag": True, "seat_selection": False},
+    "WS": {"carry_on": True, "checked_bag": False, "seat_selection": False},
+    # Latin America budget / hybrid
+    "VB": {"carry_on": False, "checked_bag": False, "seat_selection": False},
+    "Y4": {"carry_on": False, "checked_bag": False, "seat_selection": False},
+}
+
+
+def _format_perks(airline_codes: list[str]) -> str | None:
+    """Format airline perks summary for the primary airline."""
+    if not airline_codes:
+        return None
+    primary = airline_codes[0]
+    perks = _AIRLINE_PERKS.get(primary)
+    if not perks:
+        return None
+
+    items = []
+    if perks.get("carry_on") is True:
+        items.append("Free carry-on")
+    elif perks.get("carry_on") is False:
+        items.append("Paid carry-on")
+    if perks.get("checked_bag") is True:
+        items.append("Free checked bag")
+    elif perks.get("checked_bag") is False:
+        items.append("Paid checked bag")
+    if perks.get("seat_selection") is True:
+        items.append("Free seat selection")
+
+    return ", ".join(items) if items else None
+
+
+def _format_flight_result(flight, label: str) -> list[str]:
+    """Format a single FlightResult into display lines."""
+    hours, mins = divmod(flight.duration, 60)
+    duration_str = f"{hours}h {mins}m" if mins else f"{hours}h"
+
+    airlines = []
+    seen = set()
+    for leg in flight.legs:
+        if leg.airline.name not in seen:
+            airlines.append(leg.airline.name)
+            seen.add(leg.airline.name)
+    airline_str = ", ".join(airlines)
+
+    dep_time = flight.legs[0].departure_datetime.strftime("%I:%M %p")
+    arr_time = flight.legs[-1].arrival_datetime.strftime("%I:%M %p")
+
+    if flight.stops == 0:
+        stop_str = "Nonstop"
+    else:
+        s = "s" if flight.stops > 1 else ""
+        stop_str = f"{flight.stops} stop{s}"
+
+    lines = [
+        f"  {label}:",
+        f"    Airlines: {airline_str}",
+        f"    Duration: {duration_str} ({stop_str})",
+        f"    Times: {dep_time} -> {arr_time}",
+    ]
+
+    perks = _format_perks(airlines)
+    if perks:
+        lines.append(f"    Perks: {perks}")
+
+    return lines
+
+
 def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
-    """Fetch the best flight details for a triggered alert.
+    """Fetch flight details for a triggered alert.
 
     Runs a SearchFlights query for the specific departure date to get
-    airline, duration, and stop details. Returns a formatted string
-    or None if the lookup fails.
+    airline, duration, and stop details for both outbound and return.
+    Returns a formatted string or None if the lookup fails.
     """
     try:
         from fli.core.builders import build_flight_segments
-        from fli.core.parsers import parse_cabin_class, parse_max_stops, resolve_airport
+        from fli.core.parsers import (
+            parse_cabin_class,
+            parse_max_stops,
+            resolve_airport,
+        )
         from fli.models import FlightSearchFilters, PassengerInfo
         from fli.search import SearchFlights
 
@@ -146,40 +253,21 @@ def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
         if not results:
             return None
 
-        # Get the first (cheapest) result
         first = results[0]
+        lines = []
+
         if isinstance(first, tuple):
-            first = first[0]
-
-        # Format duration
-        hours, mins = divmod(first.duration, 60)
-        duration_str = f"{hours}h {mins}m" if mins else f"{hours}h"
-
-        # Collect unique airlines across all legs
-        airlines = []
-        seen = set()
-        for leg in first.legs:
-            name = leg.airline.name
-            if name not in seen:
-                airlines.append(name)
-                seen.add(name)
-        airline_str = ", ".join(airlines)
-
-        # Departure and arrival times from first and last legs
-        dep_time = first.legs[0].departure_datetime.strftime("%I:%M %p")
-        arr_time = first.legs[-1].arrival_datetime.strftime("%I:%M %p")
-
-        if first.stops == 0:
-            stop_str = "Nonstop"
+            # Round-trip: tuple of (outbound, return)
+            outbound = first[0]
+            lines.extend(_format_flight_result(outbound, "Outbound"))
+            if len(first) > 1:
+                ret = first[1]
+                lines.extend(_format_flight_result(ret, "Return"))
         else:
-            s = "s" if first.stops > 1 else ""
-            stop_str = f"{first.stops} stop{s}"
+            # One-way
+            lines.extend(_format_flight_result(first, "Flight"))
 
-        return (
-            f"Airlines: {airline_str}\n"
-            f"Duration: {duration_str} ({stop_str})\n"
-            f"Times: {dep_time} -> {arr_time}"
-        )
+        return "\n".join(lines)
 
     except Exception:
         logger.debug(
