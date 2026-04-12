@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from fli.tracker.db import TrackerDB
-from fli.tracker.models import Alert, AlertType, NotificationRecord, PriceSnapshot, Route
+from fli.tracker.models import (
+    Alert,
+    AlertType,
+    NotificationRecord,
+    PriceSnapshot,
+    Route,
+)
 
 
 @pytest.fixture()
@@ -264,6 +270,148 @@ class TestPriceSnapshots:
         assert fetched[1].price == 500.0
 
 
+class TestRouteStats:
+    """Tests for aggregate route statistics."""
+
+    def test_no_data_returns_none(self, db_with_route: tuple[TrackerDB, Route]):
+        db, route = db_with_route
+        assert db.get_route_stats(route.id) is None
+
+    def test_basic_stats(self, db_with_route: tuple[TrackerDB, Route]):
+        db, route = db_with_route
+        db.add_snapshots(
+            [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=500.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-16", price=400.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-17", price=600.0, currency="USD"
+                ),
+            ]
+        )
+        stats = db.get_route_stats(route.id)
+        assert stats is not None
+        assert stats.all_time_min == 400.0
+        assert stats.overall_median == 500.0
+        assert stats.total_count == 3
+
+    def test_median_even_count(self, db_with_route: tuple[TrackerDB, Route]):
+        db, route = db_with_route
+        db.add_snapshots(
+            [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=400.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-16", price=600.0, currency="USD"
+                ),
+            ]
+        )
+        stats = db.get_route_stats(route.id)
+        assert stats.overall_median == 500.0
+
+    def test_monthly_breakdown(self, db_with_route: tuple[TrackerDB, Route]):
+        db, route = db_with_route
+        db.add_snapshots(
+            [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=500.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-20", price=600.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-08-15", price=700.0, currency="USD"
+                ),
+            ]
+        )
+        stats = db.get_route_stats(route.id)
+        assert 7 in stats.monthly
+        assert 8 in stats.monthly
+        assert stats.monthly[7].count == 2
+        assert stats.monthly[7].avg_price == 550.0
+        assert stats.monthly[8].count == 1
+        assert stats.monthly[8].avg_price == 700.0
+
+    def test_days_of_history(self, db_with_route: tuple[TrackerDB, Route]):
+        """Days counted from distinct scanned_at dates."""
+        db, route = db_with_route
+        insert_sql = (
+            "INSERT INTO price_snapshots"
+            " (route_id, departure_date, price, currency, scanned_at)"
+            " VALUES (?, ?, ?, ?, ?)"
+        )
+        db._conn.execute(
+            insert_sql,
+            (route.id, "2026-07-15", 500.0, "USD", "2026-01-01 08:00:00"),
+        )
+        db._conn.execute(
+            insert_sql,
+            (route.id, "2026-07-15", 450.0, "USD", "2026-01-01 14:00:00"),
+        )
+        db._conn.execute(
+            insert_sql,
+            (route.id, "2026-07-16", 480.0, "USD", "2026-01-02 08:00:00"),
+        )
+        db._conn.commit()
+        stats = db.get_route_stats(route.id)
+        # Two distinct dates (2026-01-01 and 2026-01-02), even though 3 snapshots
+        assert stats.days_of_history == 2
+
+    def test_single_snapshot(self, db_with_route: tuple[TrackerDB, Route]):
+        """Single snapshot: min == median == price."""
+        db, route = db_with_route
+        db.add_snapshots(
+            [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=500.0, currency="USD"
+                ),
+            ]
+        )
+        stats = db.get_route_stats(route.id)
+        assert stats.all_time_min == 500.0
+        assert stats.overall_median == 500.0
+        assert stats.total_count == 1
+
+    def test_all_same_price(self, db_with_route: tuple[TrackerDB, Route]):
+        """Identical prices: min == median."""
+        db, route = db_with_route
+        db.add_snapshots(
+            [
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-15", price=400.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-16", price=400.0, currency="USD"
+                ),
+                PriceSnapshot(
+                    route_id=route.id, departure_date="2026-07-17", price=400.0, currency="USD"
+                ),
+            ]
+        )
+        stats = db.get_route_stats(route.id)
+        assert stats.all_time_min == 400.0
+        assert stats.overall_median == 400.0
+
+    def test_schema_migration_idempotent(self, tmp_path):
+        """Migration adds columns safely even when run multiple times."""
+        db_path = tmp_path / "migrate.db"
+        db1 = TrackerDB(db_path=db_path)
+        # Verify columns exist
+        cols = {
+            r["name"] for r in db1._conn.execute("PRAGMA table_info(notification_log)").fetchall()
+        }
+        assert "departure_date" in cols
+        assert "return_date" in cols
+        db1.close()
+        # Re-open (migration runs again) -- should not fail
+        db2 = TrackerDB(db_path=db_path)
+        db2.close()
+
+
 # ------------------------------------------------------------------
 # Alerts
 # ------------------------------------------------------------------
@@ -358,8 +506,10 @@ class TestNotificationLog:
         record = db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
+                return_date="2026-07-22",
                 price=487.0,
-                message="Price drop: DFW -> FCO, departure 2026-07-15",
+                message="test",
             )
         )
         assert record.id is not None
@@ -377,11 +527,13 @@ class TestNotificationLog:
         db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
+                return_date="2026-07-22",
                 price=487.0,
-                message="Price drop: DFW -> FCO, departure 2026-07-15",
+                message="test",
             )
         )
-        assert db.was_notification_sent(alert.id, "2026-07-15", 487.0) is True
+        assert db.was_notification_sent(alert.id, "2026-07-15", 487.0, "2026-07-22") is True
 
     def test_was_notification_sent_false_different_price(
         self, db_with_route: tuple[TrackerDB, Route]
@@ -398,11 +550,59 @@ class TestNotificationLog:
         db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
+                return_date="2026-07-22",
                 price=487.0,
-                message="Price drop: DFW -> FCO, departure 2026-07-15",
+                message="test",
             )
         )
-        assert db.was_notification_sent(alert.id, "2026-07-15", 400.0) is False
+        assert db.was_notification_sent(alert.id, "2026-07-15", 400.0, "2026-07-22") is False
+
+    def test_was_notification_sent_false_different_return(
+        self, db_with_route: tuple[TrackerDB, Route]
+    ):
+        """Different return date should not match."""
+        db, route = db_with_route
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.THRESHOLD,
+                threshold=500.0,
+                notify_url="test://url",
+            )
+        )
+        db.log_notification(
+            NotificationRecord(
+                alert_id=alert.id,
+                departure_date="2026-07-15",
+                return_date="2026-07-22",
+                price=487.0,
+                message="test",
+            )
+        )
+        assert db.was_notification_sent(alert.id, "2026-07-15", 487.0, "2026-07-25") is False
+
+    def test_was_notification_sent_one_way(self, db_with_route: tuple[TrackerDB, Route]):
+        """One-way dedup (return_date=None) should match correctly."""
+        db, route = db_with_route
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.THRESHOLD,
+                threshold=500.0,
+                notify_url="test://url",
+            )
+        )
+        db.log_notification(
+            NotificationRecord(
+                alert_id=alert.id,
+                departure_date="2026-07-15",
+                return_date=None,
+                price=487.0,
+                message="test",
+            )
+        )
+        assert db.was_notification_sent(alert.id, "2026-07-15", 487.0, None) is True
 
     def test_was_notification_sent_false_no_records(self, db_with_route: tuple[TrackerDB, Route]):
         db, route = db_with_route
@@ -427,9 +627,10 @@ class TestNotificationLog:
         db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
                 price=487.0,
-                message="test notification",
+                message="test",
             )
         )
         db.remove_alert(alert.id)
-        assert db.was_notification_sent(alert.id, "test", 487.0) is False
+        assert db.was_notification_sent(alert.id, "2026-07-15", 487.0) is False

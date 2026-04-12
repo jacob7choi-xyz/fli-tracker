@@ -11,12 +11,13 @@ import pytest
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import AlertTrigger
-from fli.tracker.models import Alert, AlertType, PriceSnapshot, Route
+from fli.tracker.models import Alert, AlertType, MonthlyStats, PriceSnapshot, Route, RouteStats
 from fli.tracker.notifier import (
     _build_search_url,
+    _build_title,
     _compute_nights,
     _format_perks,
-    _rate_deal,
+    _score_deal,
     format_message,
     notify_all,
     send_notification,
@@ -68,35 +69,111 @@ def _make_trigger(
 # ------------------------------------------------------------------
 
 
-class TestDealRating:
-    """Tests for deal quality rating."""
+def _make_stats(
+    all_time_min: float = 400.0,
+    overall_median: float = 600.0,
+    total_count: int = 50,
+    days_of_history: int = 30,
+    monthly: dict[int, MonthlyStats] | None = None,
+) -> RouteStats:
+    """Build RouteStats for scoring tests."""
+    if monthly is None:
+        monthly = {7: MonthlyStats(avg_price=600.0, count=10)}
+    return RouteStats(
+        all_time_min=all_time_min,
+        overall_median=overall_median,
+        total_count=total_count,
+        days_of_history=days_of_history,
+        monthly=monthly,
+    )
 
-    def test_domestic_insane(self):
-        assert _rate_deal(80.0, "LAX") == "INSANE DEAL"
 
-    def test_domestic_great(self):
-        assert _rate_deal(120.0, "JFK") == "Great deal"
+class TestScoreDeal:
+    """Tests for data-driven deal scoring."""
 
-    def test_domestic_good(self):
-        assert _rate_deal(200.0, "MIA") == "Good deal"
+    @pytest.mark.parametrize(
+        ("stats", "expected"),
+        [
+            pytest.param(None, "Building history...", id="no_stats"),
+            pytest.param(
+                _make_stats(total_count=5),
+                "Building history...",
+                id="insufficient_snapshots",
+            ),
+            pytest.param(
+                _make_stats(days_of_history=7),
+                "Building history...",
+                id="insufficient_days",
+            ),
+        ],
+    )
+    def test_confidence_gate(self, stats, expected):
+        assert _score_deal(450.0, stats, 7) == expected
 
-    def test_domestic_fair(self):
-        assert _rate_deal(300.0, "ORD") == "Fair price"
+    def test_price_at_median_scores_low(self):
+        stats = _make_stats(overall_median=500.0, all_time_min=400.0)
+        result = _score_deal(500.0, stats, 7)
+        assert result in ("Fair price", "Decent")
 
-    def test_europe_insane(self):
-        assert _rate_deal(450.0, "FCO") == "INSANE DEAL"
+    def test_price_well_below_median_scores_high(self):
+        stats = _make_stats(
+            overall_median=800.0,
+            all_time_min=350.0,
+            monthly={7: MonthlyStats(avg_price=800.0, count=10)},
+        )
+        result = _score_deal(350.0, stats, 7)
+        assert result in ("INSANE DEAL", "Great deal")
 
-    def test_europe_great(self):
-        assert _rate_deal(600.0, "LHR") == "Great deal"
+    def test_new_all_time_low_gets_bonus(self):
+        stats = _make_stats(
+            overall_median=700.0,
+            all_time_min=450.0,
+            monthly={7: MonthlyStats(avg_price=700.0, count=10)},
+        )
+        result = _score_deal(400.0, stats, 7)
+        assert result in ("INSANE DEAL", "Great deal")
 
-    def test_near_intl_insane(self):
-        assert _rate_deal(150.0, "CUN") == "INSANE DEAL"
+    def test_price_above_median_is_fair(self):
+        stats = _make_stats(overall_median=500.0, all_time_min=400.0)
+        assert _score_deal(600.0, stats, 7) == "Fair price"
 
-    def test_asia_great(self):
-        assert _rate_deal(900.0, "NRT") == "Great deal"
+    def test_peak_month_bonus(self):
+        """Cheap fare in a peak month (July) should score higher than shoulder."""
+        stats = _make_stats(
+            overall_median=700.0,
+            all_time_min=400.0,
+            monthly={
+                7: MonthlyStats(avg_price=750.0, count=10),
+                3: MonthlyStats(avg_price=500.0, count=10),
+            },
+        )
+        labels = ["Fair price", "Decent", "Good deal", "Great deal", "INSANE DEAL"]
+        assert labels.index(_score_deal(400.0, stats, 7)) >= labels.index(
+            _score_deal(400.0, stats, 3)
+        )
 
-    def test_unknown_destination_uses_other(self):
-        assert _rate_deal(400.0, "XYZ") == "INSANE DEAL"
+    def test_thin_month_data_skips_seasonality(self):
+        """Month with < 5 samples should not contribute to seasonality score."""
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            monthly={7: MonthlyStats(avg_price=700.0, count=2)},
+        )
+        assert _score_deal(400.0, stats, 7) != "Building history..."
+
+    def test_decile_gated_on_sample_size(self):
+        """Bottom decile scoring should be disabled with < 20 observations."""
+        stats_small = _make_stats(total_count=15, all_time_min=400.0, overall_median=600.0)
+        stats_large = _make_stats(total_count=50, all_time_min=400.0, overall_median=600.0)
+        labels = ["Fair price", "Decent", "Good deal", "Great deal", "INSANE DEAL"]
+        assert labels.index(_score_deal(400.0, stats_small, 7)) <= labels.index(
+            _score_deal(400.0, stats_large, 7)
+        )
+
+    def test_no_departure_month(self):
+        """None departure month should still score without seasonality."""
+        stats = _make_stats()
+        assert _score_deal(400.0, stats, None) != "Building history..."
 
 
 class TestComputeNights:
@@ -263,7 +340,8 @@ class TestFormatMessage:
     @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
     def test_deal_quality_in_message(self, _mock_details):
         trigger = _make_trigger(price=450.0, destination="FCO")
-        msg = format_message(trigger)
+        stats = _make_stats(overall_median=700.0, all_time_min=400.0)
+        msg = format_message(trigger, _stats=stats)
         assert "Deal quality:" in msg
 
     @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
@@ -329,7 +407,7 @@ class TestSendNotification:
 
         assert result is False
         # Notification should still be logged for dedup
-        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0) is True
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
 
     @patch("fli.tracker.notifier._fetch_flight_details", return_value=None)
     @patch("fli.tracker.notifier.apprise")
@@ -352,7 +430,7 @@ class TestSendNotification:
 
         send_notification(trigger, db)
 
-        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0) is True
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
 
     @patch("fli.tracker.notifier._HAS_APPRISE", False)
     def test_missing_apprise_returns_false(self, db: TrackerDB):
@@ -404,3 +482,45 @@ class TestNotifyAll:
         sent = notify_all([], db)
         assert sent == 0
         mock_send.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# _build_title
+# ------------------------------------------------------------------
+
+
+class TestBuildTitle:
+    """Tests for notification title generation."""
+
+    def test_drop_title_with_stats(self):
+        trigger = _make_trigger(alert_type=AlertType.DROP, price=350.0)
+        stats = _make_stats(overall_median=700.0, all_time_min=400.0)
+        title = _build_title(trigger, _stats=stats)
+        assert "Price Drop" in title
+        assert "DFW -> FCO" in title
+
+    def test_threshold_title_with_stats(self):
+        trigger = _make_trigger(
+            alert_type=AlertType.THRESHOLD, price=480.0, threshold=500.0
+        )
+        stats = _make_stats()
+        title = _build_title(trigger, _stats=stats)
+        assert "Price Alert" in title
+        assert "DFW -> FCO" in title
+
+    def test_title_without_stats(self):
+        trigger = _make_trigger()
+        title = _build_title(trigger, _stats=None)
+        assert "Building history..." in title
+
+    @pytest.mark.parametrize(
+        ("alert_type", "expected_prefix"),
+        [
+            pytest.param(AlertType.DROP, "Price Drop", id="drop"),
+            pytest.param(AlertType.THRESHOLD, "Price Alert", id="threshold"),
+        ],
+    )
+    def test_title_prefix_by_type(self, alert_type, expected_prefix):
+        trigger = _make_trigger(alert_type=alert_type, threshold=500.0)
+        title = _build_title(trigger)
+        assert title.startswith(expected_prefix)

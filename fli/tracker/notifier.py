@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import AlertTrigger
-from fli.tracker.models import AlertType, NotificationRecord
+from fli.tracker.models import AlertType, NotificationRecord, RouteStats
 
 logger = logging.getLogger(__name__)
 
@@ -30,64 +30,92 @@ except ImportError:
     _HAS_APPRISE = False
 
 
-# Deal quality thresholds by region (round-trip USD)
-_DEAL_THRESHOLDS: dict[str, tuple[float, float, float]] = {
-    # (exceptional, great, good)
-    "domestic": (100, 150, 250),
-    "near_intl": (200, 300, 400),
-    "europe": (500, 700, 900),
-    "asia": (700, 1000, 1300),
-    "other": (500, 800, 1000),
-}
+# Minimum data thresholds for scoring confidence
+_MIN_SNAPSHOTS = 10
+_MIN_DAYS = 14
+_MIN_MONTH_SAMPLES = 5
+_MIN_DECILE_SAMPLES = 20
 
-_REGION_MAP: dict[str, str] = {
-    # Domestic US
-    "LAX": "domestic", "JFK": "domestic", "MIA": "domestic", "SFO": "domestic",
-    "SEA": "domestic", "ORD": "domestic", "BOS": "domestic", "LAS": "domestic",
-    "HNL": "domestic", "DEN": "domestic", "FLL": "domestic", "MCO": "domestic",
-    "PNS": "domestic", "ATL": "domestic", "IAH": "domestic", "PHX": "domestic",
-    "SAN": "domestic", "IAD": "domestic", "DTW": "domestic", "MSP": "domestic",
-    "EWR": "domestic", "CLT": "domestic", "SLC": "domestic", "PDX": "domestic",
-    "TPA": "domestic", "AUS": "domestic", "BNA": "domestic", "RDU": "domestic",
-    "DFW": "domestic", "DCA": "domestic", "BWI": "domestic", "MSY": "domestic",
-    "HOU": "domestic",
-    # Mexico / Central America / Caribbean / South America
-    "CUN": "near_intl", "MEX": "near_intl", "SAL": "near_intl", "GUA": "near_intl",
-    "SJO": "near_intl", "LIR": "near_intl", "MID": "near_intl", "MTY": "near_intl",
-    "OAX": "near_intl", "BJX": "near_intl", "SDQ": "near_intl", "MDE": "near_intl",
-    "BOG": "near_intl", "GDL": "near_intl", "PTY": "near_intl", "SJU": "near_intl",
-    "LIM": "near_intl", "SCL": "near_intl", "GIG": "near_intl", "GRU": "near_intl",
-    "EZE": "near_intl", "PUJ": "near_intl", "MBJ": "near_intl",
-    # Canada
-    "YVR": "near_intl", "YYC": "near_intl", "YYZ": "near_intl", "YUL": "near_intl",
-    # Europe
-    "LHR": "europe", "CDG": "europe", "FCO": "europe", "BCN": "europe",
-    "AMS": "europe", "LIS": "europe", "MAD": "europe", "FRA": "europe",
-    "MUC": "europe", "ZRH": "europe", "VIE": "europe", "CPH": "europe",
-    "DUB": "europe", "ATH": "europe", "IST": "europe", "OSL": "europe",
-    # Asia / Oceania
-    "NRT": "asia", "ICN": "asia", "BKK": "asia", "HND": "asia",
-    "HKG": "asia", "SIN": "asia", "TPE": "asia", "MNL": "asia",
-    "DEL": "asia", "BOM": "asia", "SYD": "asia", "MEL": "asia",
-    "AKL": "asia", "PEK": "asia", "PVG": "asia", "KUL": "asia",
-}
+# Peak travel months (higher scores for cheap fares in expensive seasons)
+_PEAK_MONTHS = {6, 7, 8, 12}
 
 
-def _get_region(destination: str) -> str:
-    """Map a destination airport code to a region."""
-    return _REGION_MAP.get(destination, "other")
+def _score_deal(price: float, stats: RouteStats | None, departure_month: int | None) -> str:
+    """Score a deal using historical price distribution.
 
+    Returns a label string. When insufficient data exists, returns
+    "Building history..." instead of a potentially misleading rating.
 
-def _rate_deal(price: float, destination: str) -> str:
-    """Rate a deal based on price and destination region."""
-    region = _get_region(destination)
-    exceptional, great, good = _DEAL_THRESHOLDS[region]
-    if price <= exceptional:
+    Scoring (0-100):
+      Route price value (0-65):
+        - Below median:       0-30 pts
+        - Beat historical low: 0-20 pts
+        - Near bottom decile:  0-15 pts (gated on 20+ observations)
+      Seasonality (0-35):
+        - Below month average: 0-25 pts (gated on 5+ month observations)
+        - Peak month bonus:    0-10 pts
+    """
+    if stats is None:
+        return "Building history..."
+
+    if stats.total_count < _MIN_SNAPSHOTS or stats.days_of_history < _MIN_DAYS:
+        return "Building history..."
+
+    score = 0.0
+
+    # --- Route price value (0-65) ---
+
+    # Below median (0-30): linear scale from median to 0
+    if stats.overall_median > 0:
+        discount_ratio = 1 - (price / stats.overall_median)
+        # Clamp: 0 if at/above median, 1.0 if free
+        discount_ratio = max(0.0, min(1.0, discount_ratio))
+        score += discount_ratio * 30
+
+    # Beat historical low (0-20): 20 if at or below, partial credit near it
+    if stats.all_time_min > 0:
+        ratio = price / stats.all_time_min
+        if ratio <= 1.0:
+            score += 20
+        elif ratio <= 1.1:
+            # Within 10% of the low: linear from 20 down to 0
+            score += 20 * (1.1 - ratio) / 0.1
+        # Above 110% of low: 0 pts
+
+    # Near bottom decile (0-15): gated on sufficient sample size
+    if stats.total_count >= _MIN_DECILE_SAMPLES and stats.all_time_min > 0:
+        # Approximate: how close to the min vs the median
+        if stats.overall_median > stats.all_time_min:
+            position = (price - stats.all_time_min) / (
+                stats.overall_median - stats.all_time_min
+            )
+            position = max(0.0, min(1.0, position))
+            score += (1 - position) * 15
+
+    # --- Seasonality (0-35) ---
+
+    if departure_month is not None and departure_month in stats.monthly:
+        month_stats = stats.monthly[departure_month]
+        if month_stats.count >= _MIN_MONTH_SAMPLES and month_stats.avg_price > 0:
+            # Below month average (0-25)
+            month_discount = 1 - (price / month_stats.avg_price)
+            month_discount = max(0.0, min(1.0, month_discount))
+            score += month_discount * 25
+
+            # Peak month bonus (0-10): extra credit for cheap in expensive months
+            if departure_month in _PEAK_MONTHS and month_discount > 0.1:
+                score += min(month_discount * 15, 10)
+
+    final_score = round(score)
+
+    if final_score >= 80:
         return "INSANE DEAL"
-    elif price <= great:
+    elif final_score >= 60:
         return "Great deal"
-    elif price <= good:
+    elif final_score >= 40:
         return "Good deal"
+    elif final_score >= 20:
+        return "Decent"
     return "Fair price"
 
 
@@ -288,11 +316,16 @@ def _fetch_flight_details(trigger: AlertTrigger) -> str | None:
         return None
 
 
-def format_message(trigger: AlertTrigger) -> str:
+def format_message(
+    trigger: AlertTrigger,
+    _stats: RouteStats | None = None,
+) -> str:
     """Format an alert trigger into a human-readable notification message.
 
     Args:
         trigger: The triggered alert with route, snapshot, and price context.
+        _stats: Optional pre-fetched route stats for deal scoring.
+            When None, the deal label will show "Building history...".
 
     Returns:
         Formatted message string.
@@ -330,8 +363,13 @@ def format_message(trigger: AlertTrigger) -> str:
     elif trigger.alert.alert_type == AlertType.THRESHOLD and trigger.alert.threshold is not None:
         lines.append(f"Threshold: ${trigger.alert.threshold:.0f}")
 
-    # Deal rating
-    deal = _rate_deal(snap.price, route.destination)
+    # Deal rating (data-driven scoring)
+    departure_month = None
+    try:
+        departure_month = int(snap.departure_date.split("-")[1])
+    except (IndexError, ValueError):
+        pass
+    deal = _score_deal(snap.price, _stats, departure_month)
     lines.append(f"Deal quality: {deal}")
 
     # Flight details (airlines, duration, times)
@@ -376,8 +414,9 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
         logger.error("apprise is not installed. Install it with: uv add apprise")
         return False
 
-    message = format_message(trigger)
-    title = _build_title(trigger)
+    stats = db.get_route_stats(trigger.route.id)
+    message = format_message(trigger, _stats=stats)
+    title = _build_title(trigger, _stats=stats)
 
     ap = apprise.Apprise()
     ap.add(trigger.alert.notify_url)
@@ -388,6 +427,8 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
     db.log_notification(
         NotificationRecord(
             alert_id=trigger.alert.id,
+            departure_date=trigger.snapshot.departure_date,
+            return_date=trigger.snapshot.return_date,
             price=trigger.snapshot.price,
             message=message,
         )
@@ -431,10 +472,18 @@ def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     return sent
 
 
-def _build_title(trigger: AlertTrigger) -> str:
+def _build_title(
+    trigger: AlertTrigger,
+    _stats: RouteStats | None = None,
+) -> str:
     """Build a short notification title with deal rating."""
     route = trigger.route
-    deal = _rate_deal(trigger.snapshot.price, route.destination)
+    departure_month = None
+    try:
+        departure_month = int(trigger.snapshot.departure_date.split("-")[1])
+    except (IndexError, ValueError):
+        pass
+    deal = _score_deal(trigger.snapshot.price, _stats, departure_month)
     if trigger.alert.alert_type == AlertType.DROP:
         return f"Price Drop ({deal}): {route.origin} -> {route.destination}"
     return f"Price Alert ({deal}): {route.origin} -> {route.destination}"

@@ -9,7 +9,15 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from fli.tracker.models import Alert, AlertType, NotificationRecord, PriceSnapshot, Route
+from fli.tracker.models import (
+    Alert,
+    AlertType,
+    MonthlyStats,
+    NotificationRecord,
+    PriceSnapshot,
+    Route,
+    RouteStats,
+)
 
 DEFAULT_DB_PATH = Path(os.environ.get("FLI_DB_PATH", Path.home() / ".fli" / "tracker.db"))
 
@@ -85,6 +93,19 @@ class TrackerDB:
     def _init_schema(self) -> None:
         """Create tables and indexes if they do not exist."""
         self._conn.executescript(SCHEMA_SQL)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Run idempotent schema migrations for columns added after v1."""
+        existing = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(notification_log)").fetchall()
+        }
+        if "departure_date" not in existing:
+            self._conn.execute("ALTER TABLE notification_log ADD COLUMN departure_date TEXT")
+        if "return_date" not in existing:
+            self._conn.execute("ALTER TABLE notification_log ADD COLUMN return_date TEXT")
+        self._conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -236,6 +257,64 @@ class TrackerDB:
             return None
         return float(row["min_price"])
 
+    def get_route_stats(self, route_id: int) -> RouteStats | None:
+        """Compute aggregate price statistics for a route.
+
+        Returns None if the route has no price history.
+        """
+        prices_rows = self._conn.execute(
+            "SELECT price FROM price_snapshots WHERE route_id = ? ORDER BY price",
+            (route_id,),
+        ).fetchall()
+        if not prices_rows:
+            return None
+
+        prices = [float(r["price"]) for r in prices_rows]
+        total_count = len(prices)
+        all_time_min = prices[0]
+
+        # Median
+        mid = total_count // 2
+        if total_count % 2 == 0:
+            overall_median = (prices[mid - 1] + prices[mid]) / 2
+        else:
+            overall_median = prices[mid]
+
+        # Days of history: distinct scanned_at dates
+        days_row = self._conn.execute(
+            """
+            SELECT COUNT(DISTINCT date(scanned_at)) AS days
+            FROM price_snapshots WHERE route_id = ?
+            """,
+            (route_id,),
+        ).fetchone()
+        days_of_history = days_row["days"] if days_row else 0
+
+        # Monthly averages and counts (month = 1-12 from departure_date)
+        monthly_rows = self._conn.execute(
+            """
+            SELECT CAST(strftime('%m', departure_date) AS INTEGER) AS month,
+                   AVG(price) AS avg_price,
+                   COUNT(*) AS cnt
+            FROM price_snapshots
+            WHERE route_id = ?
+            GROUP BY month
+            """,
+            (route_id,),
+        ).fetchall()
+        monthly = {
+            int(r["month"]): MonthlyStats(avg_price=float(r["avg_price"]), count=int(r["cnt"]))
+            for r in monthly_rows
+        }
+
+        return RouteStats(
+            all_time_min=all_time_min,
+            overall_median=overall_median,
+            total_count=total_count,
+            days_of_history=days_of_history,
+            monthly=monthly,
+        )
+
     @staticmethod
     def _row_to_snapshot(row: sqlite3.Row) -> PriceSnapshot:
         return PriceSnapshot(
@@ -311,27 +390,55 @@ class TrackerDB:
     def log_notification(self, record: NotificationRecord) -> NotificationRecord:
         """Insert a notification log entry and return it with its assigned id."""
         cur = self._conn.execute(
-            "INSERT INTO notification_log (alert_id, price, message) VALUES (?, ?, ?)",
-            (record.alert_id, record.price, record.message),
+            """
+            INSERT INTO notification_log
+                (alert_id, departure_date, return_date, price, message)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                record.alert_id,
+                record.departure_date,
+                record.return_date,
+                record.price,
+                record.message,
+            ),
         )
         self._conn.commit()
         record.id = cur.lastrowid
         return record
 
-    def was_notification_sent(self, alert_id: int, departure_date: str, price: float) -> bool:
-        """Check if a notification was already sent for this alert, date, and price.
+    def was_notification_sent(
+        self,
+        alert_id: int,
+        departure_date: str,
+        price: float,
+        return_date: str | None = None,
+    ) -> bool:
+        """Check if a notification was already sent for this fare event.
 
-        Used to deduplicate threshold alerts so users are not spammed
-        for the same price on the same departure date.
+        Deduplicates on structural fields (alert_id, departure_date,
+        return_date, price) instead of message text.
         """
-        row = self._conn.execute(
-            """
-            SELECT 1 FROM notification_log
-            WHERE alert_id = ? AND message LIKE ? AND price = ?
-            LIMIT 1
-            """,
-            (alert_id, f"%{departure_date}%", price),
-        ).fetchone()
+        if return_date is not None:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM notification_log
+                WHERE alert_id = ? AND departure_date = ?
+                    AND return_date = ? AND price = ?
+                LIMIT 1
+                """,
+                (alert_id, departure_date, return_date, price),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM notification_log
+                WHERE alert_id = ? AND departure_date = ?
+                    AND return_date IS NULL AND price = ?
+                LIMIT 1
+                """,
+                (alert_id, departure_date, price),
+            ).fetchone()
         return row is not None
 
     @staticmethod
@@ -339,6 +446,8 @@ class TrackerDB:
         return NotificationRecord(
             id=row["id"],
             alert_id=row["alert_id"],
+            departure_date=row["departure_date"],
+            return_date=row["return_date"],
             price=row["price"],
             message=row["message"],
             sent_at=datetime.fromisoformat(row["sent_at"]),

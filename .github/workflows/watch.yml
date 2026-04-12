@@ -76,5 +76,8 @@ jobs:
             echo "No DB changes to commit"
           else
             git commit -m "Update price data $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            if ! git push; then
+              echo "::error::Failed to push updated DB to data branch"
+              exit 1
+            fi
           fi

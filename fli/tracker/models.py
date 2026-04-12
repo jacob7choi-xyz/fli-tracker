@@ -6,12 +6,12 @@ of rows in the SQLite database.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, NonNegativeFloat, PositiveInt
 
 
-class AlertType(str, Enum):
+class AlertType(StrEnum):
     """Type of price alert trigger."""
 
     THRESHOLD = "threshold"
@@ -62,6 +62,29 @@ class NotificationRecord(BaseModel):
 
     id: int | None = None
     alert_id: int
+    departure_date: str | None = None
+    return_date: str | None = None
     price: NonNegativeFloat
     message: str
     sent_at: datetime | None = None
+
+
+class MonthlyStats(BaseModel):
+    """Price statistics for a single month on a route."""
+
+    avg_price: float
+    count: int
+
+
+class RouteStats(BaseModel):
+    """Aggregate price statistics for a tracked route.
+
+    Used by the deal scorer to evaluate how a new fare compares
+    to the route's historical price distribution.
+    """
+
+    all_time_min: float
+    overall_median: float
+    total_count: int
+    days_of_history: int
+    monthly: dict[int, MonthlyStats]

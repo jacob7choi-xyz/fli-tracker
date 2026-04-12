@@ -143,7 +143,9 @@ def _check_threshold(
     if snapshot.price > alert.threshold:
         return None
 
-    if db.was_notification_sent(alert.id, snapshot.departure_date, snapshot.price):
+    if db.was_notification_sent(
+        alert.id, snapshot.departure_date, snapshot.price, snapshot.return_date
+    ):
         return None
 
     logger.info(

@@ -127,6 +127,76 @@ fli --help
     * Comprehensive error handling
     * Input validation
 
+## Price Tracker
+
+Fli includes a built-in price tracking system that monitors flight routes and alerts you when prices drop to historically low levels.
+
+### How It Works
+
+- **Track routes**: Define origin/destination pairs to monitor
+- **Scheduled scans**: Automated sweeps every 6 hours via GitHub Actions (or local cron/launchd)
+- **Smart deal scoring**: Data-driven 0-100 scoring based on historical price distribution and seasonality (not static thresholds)
+- **Rich email alerts**: Notifications include deal rating, flight details, airline perks, and booking links
+- **SQLite storage**: Lightweight local database for price history with no external dependencies
+
+### Quick Start
+
+```bash
+# Install with tracker dependencies
+uv sync --extra tracker
+
+# Add a route to track
+fli track add DFW FCO --cabin ECONOMY --duration 7 --look-ahead 90
+
+# Add a price drop alert with email notification
+fli alert add 1 --drop --notify "mailto://user:app_password@gmail.com?to=you@gmail.com"
+
+# Run a manual sweep
+fli watch --verbose
+
+# View price history
+fli history 1 --chart
+```
+
+### Tracker Commands
+
+| Command | Description |
+|---------|-------------|
+| `fli track add` | Add a route to monitor |
+| `fli track list` | List tracked routes |
+| `fli track pause/resume` | Pause or resume a route |
+| `fli track remove` | Remove a route and its data |
+| `fli alert add` | Add a price alert (threshold or drop detection) |
+| `fli alert list` | List configured alerts |
+| `fli alert remove` | Remove an alert |
+| `fli watch` | Run a single price sweep |
+| `fli history` | View price history (table or ASCII chart) |
+
+### Deal Scoring
+
+The deal scorer uses a composite 0-100 score based on real price data:
+
+- **Route price value (0-65 pts)**: How far below the route's historical median, whether it matches or beats the all-time low, and proximity to the bottom of the price distribution
+- **Seasonality (0-35 pts)**: How the fare compares to the route's average for that month, with bonus credit for cheap fares in expensive seasons (summer, holidays)
+
+A confidence gate prevents misleading ratings: routes with fewer than 14 days of history or 10 snapshots show "Building history..." instead of a score.
+
+| Score | Label |
+|-------|-------|
+| 80-100 | INSANE DEAL |
+| 60-79 | Great deal |
+| 40-59 | Good deal |
+| 20-39 | Decent |
+| 0-19 | Fair price |
+
+### Automated Scanning
+
+The included GitHub Actions workflow (`.github/workflows/watch.yml`) runs sweeps every 6 hours. Price data is persisted on a dedicated `data` branch. See the workflow file for setup details.
+
+For local scheduling, a launchd plist is available at `~/Library/LaunchAgents/com.fli.watch.plist` (macOS).
+
+---
+
 ## CLI Usage
 
 ### Search for Flights

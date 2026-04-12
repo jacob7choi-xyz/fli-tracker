@@ -285,3 +285,11 @@ direct. Three similar lines of code is better than a premature abstraction.
 - **Tests mandatory and parallel.** Every addition or change must include
   corresponding tests written in parallel, not deferred. No "we'll add
   tests later."
+- **Use pytest.parametrize.** Prefer `@pytest.mark.parametrize` for
+  table-driven tests to reduce boilerplate and make test cases explicit.
+- **Use StrEnum.** Prefer `StrEnum` (Python 3.11+) over the `(str, Enum)`
+  mixin pattern for string enums.
+- **Specific exception catches.** Catch specific exception types, not bare
+  `except Exception`. Broad catches are acceptable only at external API
+  boundaries (network calls, third-party libraries) where many exception
+  types are possible.

@@ -191,12 +191,13 @@ class TestThresholdAlerts:
             )
         )
 
-        # Simulate a previous notification
+        # Simulate a previous notification with structural dedup fields
         db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
                 price=450.0,
-                message="Price drop: DFW -> FCO, departure 2026-07-15",
+                message="test",
             )
         )
 
@@ -220,8 +221,9 @@ class TestThresholdAlerts:
         db.log_notification(
             NotificationRecord(
                 alert_id=alert.id,
+                departure_date="2026-07-15",
                 price=450.0,
-                message="Price drop: DFW -> FCO, departure 2026-07-15",
+                message="test",
             )
         )
 
