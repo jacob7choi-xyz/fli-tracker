@@ -129,14 +129,15 @@ fli --help
 
 ## Price Tracker
 
-Fli includes a built-in price tracking system that monitors flight routes and alerts you when prices drop to historically low levels.
+Fli includes a built-in price tracking system that monitors flight routes and alerts you when prices drop to deal-level thresholds.
 
 ### How It Works
 
-- **Track routes**: Define origin/destination pairs to monitor
+- **Track routes**: Define origin/destination pairs with flexible trip durations and per-route price caps
 - **Scheduled scans**: Automated sweeps every 6 hours via GitHub Actions (or local cron/launchd)
 - **Smart deal scoring**: Data-driven 0-100 scoring based on historical price distribution and seasonality (not static thresholds)
-- **Rich email alerts**: Notifications include deal rating, flight details, airline perks, and booking links
+- **Digest emails**: One HTML email per sweep with Domestic and International sections, flight details (airline, duration, stops, perks), city names, and Google Flights booking links
+- **Per-route price caps**: Region-aware max_price filtering (e.g., $120 domestic, $200 Mexico/Caribbean, $550 Europe, $750 Asia, $900 Oceania)
 - **SQLite storage**: Lightweight local database for price history with no external dependencies
 
 ### Quick Start
@@ -145,8 +146,8 @@ Fli includes a built-in price tracking system that monitors flight routes and al
 # Install with tracker dependencies
 uv sync --extra tracker
 
-# Add a route to track
-fli track add DFW FCO --cabin ECONOMY --duration 7 --look-ahead 90
+# Add a route with flexible durations and a price cap
+fli track add DFW FCO --cabin ECONOMY --durations "7,10,14" --max-price 550 --look-ahead 90
 
 # Add a price drop alert with email notification
 fli alert add 1 --drop --notify "mailto://user:app_password@gmail.com?to=you@gmail.com"
@@ -162,8 +163,8 @@ fli history 1 --chart
 
 | Command | Description |
 |---------|-------------|
-| `fli track add` | Add a route to monitor |
-| `fli track list` | List tracked routes |
+| `fli track add` | Add a route to monitor (supports `--durations`, `--max-price`) |
+| `fli track list` | List tracked routes with durations and price caps |
 | `fli track pause/resume` | Pause or resume a route |
 | `fli track remove` | Remove a route and its data |
 | `fli alert add` | Add a price alert (threshold or drop detection) |

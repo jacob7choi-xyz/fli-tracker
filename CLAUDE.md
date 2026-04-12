@@ -11,6 +11,7 @@ Fli is a Python library that provides programmatic access to Google Flights data
 - **Core utilities** (`fli/core/`) - Shared parsing and building utilities
 - **Search engine** (`fli/search/`) - Flight and date search implementations using Google Flights API
 - **Data models** (`fli/models/`) - Pydantic models for airports, airlines, and flight data structures
+- **Price tracker** (`fli/tracker/`) - Route monitoring, price history, deal scoring, and digest email alerts
 
 ## Development Commands
 
@@ -83,6 +84,16 @@ uv run mkdocs build         # Build static docs
    - Smart argument parsing (treats non-command args as flights)
    - Rich console output for flight results
 
+7. **Price Tracker** (`fli/tracker/`)
+   - `models.py`: Route, Alert, PriceSnapshot, RouteStats models
+   - `db.py`: SQLite storage with schema migrations, price history, route stats
+   - `scanner.py`: Multi-duration route scanning with deduplication
+   - `detector.py`: Price drop and threshold alert detection
+   - `notifier.py`: Digest email formatting (Domestic/International sections), deal scoring, flight detail enrichment via API
+   - `data/airport_locations.csv`: Airport metadata (city, region, country) for display labels and domestic/international classification
+   - Per-route `max_price` caps filter noise by region ($120 domestic, $200 Mexico/Caribbean, $550 Europe, $750 Asia)
+   - Flexible `durations` list per route (e.g., [5,7,10]) for multi-duration date searches
+
 ### Key Design Patterns
 
 - **Direct API Access**: Uses reverse-engineered Google Flights API endpoints (not web scraping)
@@ -101,6 +112,11 @@ uv run mkdocs build         # Build static docs
 - `fli/search/flights.py` - Core flight search implementation
 - `fli/search/client.py` - HTTP client with rate limiting and retries
 - `fli/models/google_flights/` - All Google Flights data structures
+- `fli/tracker/notifier.py` - Digest email formatting, deal scoring, flight detail enrichment
+- `fli/tracker/scanner.py` - Multi-duration route scanning
+- `fli/tracker/db.py` - SQLite storage with migrations
+- `fli/tracker/detector.py` - Price drop and threshold alert detection
+- `data/airport_locations.csv` - Airport city/country metadata for display and classification
 - `pyproject.toml` - Package configuration with script entry points
 
 ## MCP Tool Reference
