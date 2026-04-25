@@ -42,15 +42,31 @@ def _load_airport_countries() -> dict[str, str]:
 
 _AIRPORT_COUNTRIES: dict[str, str] = _load_airport_countries()
 
-RouteGroup = Literal["domestic", "longhaul"]
+RouteGroup = Literal["domestic", "coastal", "longhaul"]
+
+# Major US east/west coast metros carved out into their own sweep group
+# so the domestic workflow doesn't become a junk drawer as routes grow.
+_COASTAL_AIRPORTS: frozenset[str] = frozenset({
+    # NYC metro
+    "JFK", "LGA", "EWR",
+    # LA metro
+    "LAX", "BUR", "SNA",
+    # Other US coastal cities
+    "BOS", "SEA",
+})
 
 
 def route_group(origin: str, destination: str) -> RouteGroup:
-    """Classify a route as domestic or longhaul based on destination country.
+    """Classify a route as coastal, domestic, or longhaul.
 
-    Domestic includes US, Puerto Rico, Mexico, Caribbean,
-    Central America, and Canada. Everything else is longhaul.
+    Coastal: major US east/west coast metros (NYC, LA, Boston, Seattle).
+    Domestic: US, Puerto Rico, Mexico, Caribbean, Central America, Canada.
+    Longhaul: everything else.
+
+    Coastal is checked first so those airports don't fall through to domestic.
     """
+    if destination in _COASTAL_AIRPORTS:
+        return "coastal"
     dest_country = _AIRPORT_COUNTRIES.get(destination, "")
     if dest_country in _DOMESTIC_COUNTRIES:
         return "domestic"
