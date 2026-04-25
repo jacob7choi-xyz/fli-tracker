@@ -7,6 +7,7 @@ Enriches alerts with flight details (airlines, duration, stops) when possible.
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -176,6 +177,54 @@ def _score_deal(price: float, stats: RouteStats | None, departure_month: int | N
     elif final_score >= 20:
         return "Meh"
     return "Skip"
+
+
+def _build_trend_line(
+    price: float, stats: RouteStats | None, departure_month: int | None
+) -> str | None:
+    """Build a compact trend summary, e.g. '38% below median; new 21d low'.
+
+    Returns None when there is insufficient data to make a meaningful claim.
+    Parts are ordered: median context, all-time-low context, monthly (bonus only).
+    """
+    if stats is None:
+        return None
+    if stats.total_count < _MIN_SNAPSHOTS or stats.days_of_history < _MIN_DAYS:
+        return None
+
+    parts = []
+
+    # 1. vs. overall median
+    if stats.overall_median > 0:
+        pct = (stats.overall_median - price) / stats.overall_median * 100
+        if pct >= 1:
+            parts.append(f"{pct:.0f}% below median")
+        elif pct <= -1:
+            parts.append(f"{abs(pct):.0f}% above median")
+        else:
+            parts.append("at median")
+
+    # 2. vs. all-time low
+    if stats.all_time_min > 0:
+        ratio = price / stats.all_time_min
+        if ratio <= 1.0:
+            parts.append(f"new {stats.days_of_history}d low")
+        elif ratio <= 1.05:
+            parts.append(f"near all-time low (${stats.all_time_min:.0f})")
+        else:
+            above = price - stats.all_time_min
+            parts.append(f"${above:.0f} above all-time low")
+
+    # 3. vs. monthly avg (bonus only when notably below: >=10% discount, >=5 samples)
+    if departure_month is not None and departure_month in stats.monthly:
+        month_stats = stats.monthly[departure_month]
+        if month_stats.count >= _MIN_MONTH_SAMPLES and month_stats.avg_price > 0:
+            month_pct = (month_stats.avg_price - price) / month_stats.avg_price * 100
+            if month_pct >= 10:
+                month_name = datetime(2000, departure_month, 1).strftime("%b")
+                parts.append(f"{month_pct:.0f}% below {month_name} avg")
+
+    return "; ".join(parts) if parts else None
 
 
 def _compute_nights(departure_date: str, return_date: str | None) -> int | None:
@@ -466,6 +515,9 @@ def format_message(
         pass
     deal = _score_deal(snap.price, _stats, departure_month)
     lines.append(f"Deal quality: {deal}")
+    trend = _build_trend_line(snap.price, _stats, departure_month)
+    if trend:
+        lines.append(f"Trend: {trend}")
 
     # Flight details (airlines, duration, times)
     legs = fetch_flight_details(trigger)
@@ -582,6 +634,11 @@ def _render_trigger_block(
     except (IndexError, ValueError):
         pass
     deal = _score_deal(snap.price, stats, departure_month)
+    trend = _build_trend_line(snap.price, stats, departure_month)
+    trend_html = (
+        f'<div style="font-size:12px;color:#888;margin:2px 0;">{html.escape(trend)}</div>'
+        if trend else ""
+    )
 
     # Price
     price_str = f"${snap.price:.0f} RT" if snap.return_date else f"${snap.price:.0f}"
@@ -633,6 +690,7 @@ def _render_trigger_block(
         f'{orig_city} -> {dest_city_label}</div>'
         f'<div style="font-size:20px;font-weight:bold;margin:8px 0;">'
         f'{price_str} &middot; {deal}</div>'
+        f'{trend_html}'
         f'<div style="font-size:14px;">{date_str}</div>'
         f'<div style="font-size:13px;color:#666;margin:4px 0;">'
         f'{alert_label}</div>'

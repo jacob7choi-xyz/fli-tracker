@@ -16,6 +16,7 @@ from fli.tracker.notifier import (
     LegDetail,
     _build_search_url,
     _build_title,
+    _build_trend_line,
     _compute_nights,
     _format_perks,
     _is_domestic_route,
@@ -179,6 +180,95 @@ class TestScoreDeal:
         """None departure month should still score without seasonality."""
         stats = _make_stats()
         assert _score_deal(400.0, stats, None) != "Building history..."
+
+
+class TestBuildTrendLine:
+    """Tests for the compact per-deal trend summary."""
+
+    @pytest.mark.parametrize(
+        "stats",
+        [
+            pytest.param(None, id="no_stats"),
+            pytest.param(_make_stats(total_count=5), id="insufficient_snapshots"),
+            pytest.param(_make_stats(days_of_history=7), id="insufficient_days"),
+        ],
+    )
+    def test_returns_none_when_insufficient_data(self, stats):
+        assert _build_trend_line(450.0, stats, 7) is None
+
+    def test_below_median(self):
+        stats = _make_stats(overall_median=600.0, all_time_min=300.0)
+        result = _build_trend_line(400.0, stats, None)
+        assert result is not None
+        assert "below median" in result
+
+    def test_above_median(self):
+        stats = _make_stats(overall_median=400.0, all_time_min=300.0)
+        result = _build_trend_line(500.0, stats, None)
+        assert result is not None
+        assert "above median" in result
+
+    def test_at_median(self):
+        stats = _make_stats(overall_median=450.0, all_time_min=300.0)
+        result = _build_trend_line(450.0, stats, None)
+        assert result is not None
+        assert "at median" in result
+
+    def test_new_all_time_low(self):
+        stats = _make_stats(overall_median=600.0, all_time_min=450.0, days_of_history=30)
+        result = _build_trend_line(400.0, stats, None)
+        assert result is not None
+        assert "new 30d low" in result
+
+    def test_near_all_time_low(self):
+        stats = _make_stats(overall_median=600.0, all_time_min=400.0)
+        # 415 / 400 = 1.0375, within 5%
+        result = _build_trend_line(415.0, stats, None)
+        assert result is not None
+        assert "near all-time low" in result
+        assert "$400" in result
+
+    def test_above_all_time_low(self):
+        stats = _make_stats(overall_median=600.0, all_time_min=300.0)
+        result = _build_trend_line(500.0, stats, None)
+        assert result is not None
+        assert "$200 above all-time low" in result
+
+    def test_monthly_context_shown_when_significant(self):
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            monthly={7: MonthlyStats(avg_price=700.0, count=10)},
+        )
+        # 560 is 20% below Jul avg of 700 -- should appear
+        result = _build_trend_line(560.0, stats, 7)
+        assert result is not None
+        assert "Jul" in result
+
+    def test_monthly_context_omitted_when_small_discount(self):
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            monthly={7: MonthlyStats(avg_price=620.0, count=10)},
+        )
+        # 580 is ~6% below 620 -- below 10% threshold, should be omitted
+        result = _build_trend_line(580.0, stats, 7)
+        assert result is None or "Jul" not in result
+
+    def test_monthly_context_omitted_when_thin_data(self):
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            monthly={7: MonthlyStats(avg_price=700.0, count=2)},
+        )
+        result = _build_trend_line(400.0, stats, 7)
+        assert result is None or "Jul" not in result
+
+    def test_parts_joined_by_semicolon(self):
+        stats = _make_stats(overall_median=600.0, all_time_min=400.0)
+        result = _build_trend_line(400.0, stats, None)
+        assert result is not None
+        assert "; " in result
 
 
 class TestComputeNights:
@@ -354,6 +444,20 @@ class TestFormatMessage:
         trigger = _make_trigger()
         msg = format_message(trigger)
         assert "google.com/travel/flights" in msg
+
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
+    def test_trend_line_shown_when_stats_available(self, _mock_details):
+        trigger = _make_trigger(price=400.0)
+        stats = _make_stats(overall_median=600.0, all_time_min=300.0)
+        msg = format_message(trigger, _stats=stats)
+        assert "Trend:" in msg
+
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
+    def test_no_trend_line_when_insufficient_stats(self, _mock_details):
+        trigger = _make_trigger(price=400.0)
+        stats = _make_stats(total_count=5)  # below _MIN_SNAPSHOTS threshold
+        msg = format_message(trigger, _stats=stats)
+        assert "Trend:" not in msg
 
 
 # ------------------------------------------------------------------
