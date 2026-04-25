@@ -34,6 +34,7 @@ class Route(BaseModel):
     max_price: NonNegativeFloat | None = None
     created_at: datetime | None = None
     active: bool = True
+    snoozed_until: str | None = None
 
     @property
     def trip_duration(self) -> int:

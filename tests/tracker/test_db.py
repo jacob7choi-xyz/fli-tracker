@@ -139,6 +139,75 @@ class TestRoutes:
     def test_remove_route_nonexistent(self, db: TrackerDB):
         assert db.remove_route(999) is False
 
+    def test_snooze_excludes_route_from_active_sweep(self, db: TrackerDB):
+        """A snoozed route is excluded from active_only=True list."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, "2099-12-31")
+        active = db.list_routes(active_only=True)
+        assert all(r.id != route.id for r in active)
+
+    def test_snooze_visible_in_full_list(self, db: TrackerDB):
+        """A snoozed route still appears in active_only=False list."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, "2099-12-31")
+        all_routes = db.list_routes(active_only=False)
+        assert any(r.id == route.id for r in all_routes)
+
+    def test_snooze_stores_until_date(self, db: TrackerDB):
+        """snooze_route persists the until date on the route."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, "2026-05-10")
+        fetched = db.get_route(route.id)
+        assert fetched.snoozed_until == "2026-05-10"
+
+    def test_unsnooze_wakes_route(self, db: TrackerDB):
+        """unsnooze_route clears the snooze and restores the route to sweeps."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, "2099-12-31")
+        db.unsnooze_route(route.id)
+        fetched = db.get_route(route.id)
+        assert fetched.snoozed_until is None
+        active = db.list_routes(active_only=True)
+        assert any(r.id == route.id for r in active)
+
+    def test_expired_snooze_auto_wakes(self, db: TrackerDB):
+        """A snooze whose date has passed is treated as inactive (auto-wake)."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, "2020-01-01")  # past date
+        active = db.list_routes(active_only=True)
+        assert any(r.id == route.id for r in active)
+
+    def test_snooze_today_is_still_excluded(self, db: TrackerDB):
+        """Inclusive semantics: snoozed until today means muted for the whole day."""
+        from datetime import date
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.snooze_route(route.id, date.today().isoformat())
+        active = db.list_routes(active_only=True)
+        assert all(r.id != route.id for r in active)
+
+    def test_paused_and_snoozed_excluded_from_sweep(self, db: TrackerDB):
+        """A paused route stays excluded even if snooze is also set."""
+        route = db.add_route(Route(origin="DFW", destination="FCO", active=False))
+        db.snooze_route(route.id, "2099-12-31")
+        active = db.list_routes(active_only=True)
+        assert all(r.id != route.id for r in active)
+
+    def test_unsnooze_does_not_change_active_state(self, db: TrackerDB):
+        """Unsnoozeing a route does not set it active if it was paused."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        db.set_route_active(route.id, False)
+        db.snooze_route(route.id, "2099-12-31")
+        db.unsnooze_route(route.id)
+        fetched = db.get_route(route.id)
+        assert fetched.snoozed_until is None
+        assert fetched.active is False
+
+    def test_snooze_nonexistent_returns_false(self, db: TrackerDB):
+        assert db.snooze_route(999, "2099-12-31") is False
+
+    def test_unsnooze_nonexistent_returns_false(self, db: TrackerDB):
+        assert db.unsnooze_route(999) is False
+
     def test_remove_route_cascades(self, db_with_route: tuple[TrackerDB, Route]):
         """Removing a route also removes its snapshots, alerts, and notifications."""
         db, route = db_with_route

@@ -1,5 +1,6 @@
 """CLI commands for managing tracked routes."""
 
+from datetime import date, timedelta
 from typing import Annotated
 
 import typer
@@ -136,13 +137,19 @@ def track_list(
     table.add_column("Look-ahead")
     table.add_column("Status")
 
+    today = date.today().isoformat()
     for r in routes:
         if r.is_round_trip:
             dur_str = "RT (" + ",".join(str(d) for d in r.durations) + "d)"
         else:
             dur_str = "OW"
         price_str = f"${r.max_price:.0f}" if r.max_price else "-"
-        status = "active" if r.active else "paused"
+        if not r.active:
+            status = "paused"
+        elif r.snoozed_until and r.snoozed_until >= today:
+            status = f"snoozed until {r.snoozed_until}"
+        else:
+            status = "active"
         table.add_row(
             str(r.id),
             f"{r.origin} -> {r.destination}",
@@ -201,5 +208,58 @@ def track_resume(
         else:
             typer.echo(f"Route {route_id} not found")
             raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@track_app.command(name="snooze")
+def track_snooze(
+    route_id: Annotated[int, typer.Argument(help="Route ID to snooze")],
+    days: Annotated[
+        int,
+        typer.Option("--days", "-d", help="Number of days to snooze (default 7)"),
+    ] = 7,
+):
+    """Temporarily mute a route for N days. Alerts auto-resume after expiry."""
+    if days < 1:
+        typer.echo("Error: --days must be at least 1")
+        raise typer.Exit(1)
+
+    until = (date.today() + timedelta(days=days)).isoformat()
+    db = _get_db()
+    try:
+        route = db.get_route(route_id)
+        if route is None:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
+        db.snooze_route(route_id, until)
+        typer.echo(
+            f"Snoozed route {route_id} ({route.origin} -> {route.destination})"
+            f" until {until}"
+        )
+    finally:
+        db.close()
+
+
+@track_app.command(name="unsnooze")
+def track_unsnooze(
+    route_id: Annotated[int, typer.Argument(help="Route ID to wake early")],
+):
+    """Wake a snoozed route before its expiry."""
+    db = _get_db()
+    try:
+        route = db.get_route(route_id)
+        if route is None:
+            typer.echo(f"Route {route_id} not found")
+            raise typer.Exit(1)
+        today = date.today().isoformat()
+        if not route.snoozed_until or route.snoozed_until < today:
+            typer.echo(
+                f"Route {route_id} ({route.origin} -> {route.destination})"
+                " is not currently snoozed."
+            )
+            return
+        db.unsnooze_route(route_id)
+        typer.echo(f"Unsnoozed route {route_id} ({route.origin} -> {route.destination})")
     finally:
         db.close()

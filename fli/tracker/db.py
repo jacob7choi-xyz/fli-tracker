@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS routes (
     look_ahead    INTEGER NOT NULL DEFAULT 45,
     is_round_trip INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    active        INTEGER NOT NULL DEFAULT 1
+    active        INTEGER NOT NULL DEFAULT 1,
+    snoozed_until TEXT
 );
 
 CREATE TABLE IF NOT EXISTS price_snapshots (
@@ -120,6 +121,8 @@ class TrackerDB:
             )
         if "max_price" not in route_cols:
             self._conn.execute("ALTER TABLE routes ADD COLUMN max_price REAL")
+        if "snoozed_until" not in route_cols:
+            self._conn.execute("ALTER TABLE routes ADD COLUMN snoozed_until TEXT")
 
         self._conn.commit()
 
@@ -165,9 +168,20 @@ class TrackerDB:
         return self._row_to_route(row)
 
     def list_routes(self, active_only: bool = True) -> list[Route]:
-        """Return all routes, optionally filtering to active ones."""
+        """Return routes, optionally filtering to scannable ones.
+
+        When active_only=True (used by sweeps), excludes both paused routes
+        and routes whose snooze has not yet expired.
+        When active_only=False (used by CLI list), returns all routes.
+        """
         if active_only:
-            rows = self._conn.execute("SELECT * FROM routes WHERE active = 1").fetchall()
+            rows = self._conn.execute(
+                """
+                SELECT * FROM routes
+                WHERE active = 1
+                  AND (snoozed_until IS NULL OR date(snoozed_until) < date('now'))
+                """
+            ).fetchall()
         else:
             rows = self._conn.execute("SELECT * FROM routes").fetchall()
         return [self._row_to_route(r) for r in rows]
@@ -186,6 +200,24 @@ class TrackerDB:
         cur = self._conn.execute(
             "UPDATE routes SET active = ? WHERE id = ?",
             (int(active), route_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def snooze_route(self, route_id: int, until_date: str) -> bool:
+        """Snooze a route until the given date (YYYY-MM-DD). Returns True if found."""
+        cur = self._conn.execute(
+            "UPDATE routes SET snoozed_until = ? WHERE id = ?",
+            (until_date, route_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def unsnooze_route(self, route_id: int) -> bool:
+        """Clear a route's snooze, waking it immediately. Returns True if found."""
+        cur = self._conn.execute(
+            "UPDATE routes SET snoozed_until = NULL WHERE id = ?",
+            (route_id,),
         )
         self._conn.commit()
         return cur.rowcount > 0
@@ -219,6 +251,7 @@ class TrackerDB:
             durations = [row["trip_duration"]]
 
         max_price_raw = row["max_price"] if "max_price" in row.keys() else None
+        snoozed_until_raw = row["snoozed_until"] if "snoozed_until" in row.keys() else None
 
         return Route(
             id=row["id"],
@@ -232,6 +265,7 @@ class TrackerDB:
             max_price=float(max_price_raw) if max_price_raw is not None else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             active=bool(row["active"]),
+            snoozed_until=snoozed_until_raw,
         )
 
     # ------------------------------------------------------------------

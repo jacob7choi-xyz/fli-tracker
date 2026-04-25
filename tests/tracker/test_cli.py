@@ -130,6 +130,50 @@ class TestTrackPauseResume:
         assert "Resumed" in result.output
 
 
+class TestTrackSnooze:
+    def test_snooze_default_7_days(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        result = runner.invoke(app, ["track", "snooze", str(route.id)])
+        assert result.exit_code == 0
+        assert "Snoozed" in result.output
+        assert "until" in result.output
+
+    def test_snooze_custom_days(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        result = runner.invoke(app, ["track", "snooze", str(route.id), "--days", "14"])
+        assert result.exit_code == 0
+        assert "Snoozed" in result.output
+
+    def test_snooze_zero_days_rejected(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        result = runner.invoke(app, ["track", "snooze", str(route.id), "--days", "0"])
+        assert result.exit_code == 1
+
+    def test_snooze_nonexistent_route(self, runner, tmp_db):
+        result = runner.invoke(app, ["track", "snooze", "999"])
+        assert result.exit_code == 1
+
+    def test_unsnooze_wakes_early(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        runner.invoke(app, ["track", "snooze", str(route.id), "--days", "7"])
+        result = runner.invoke(app, ["track", "unsnooze", str(route.id)])
+        assert result.exit_code == 0
+        assert "Unsnoozed" in result.output
+
+    def test_unsnooze_not_snoozed_shows_friendly_message(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        result = runner.invoke(app, ["track", "unsnooze", str(route.id)])
+        assert result.exit_code == 0
+        assert "not currently snoozed" in result.output
+
+    def test_list_shows_snoozed_status(self, runner, tmp_db):
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        runner.invoke(app, ["track", "snooze", str(route.id), "--days", "7"])
+        result = runner.invoke(app, ["track", "list", "--all"])
+        assert result.exit_code == 0
+        assert "snoozed" in result.output.lower()
+
+
 # ------------------------------------------------------------------
 # alert commands
 # ------------------------------------------------------------------
