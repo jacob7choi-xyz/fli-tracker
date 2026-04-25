@@ -118,7 +118,7 @@ class TestScoreDeal:
     def test_price_at_median_scores_low(self):
         stats = _make_stats(overall_median=500.0, all_time_min=400.0)
         result = _score_deal(500.0, stats, 7)
-        assert result in ("Fair price", "Decent")
+        assert result in ("Skip", "Meh")
 
     def test_price_well_below_median_scores_high(self):
         stats = _make_stats(
@@ -127,7 +127,7 @@ class TestScoreDeal:
             monthly={7: MonthlyStats(avg_price=800.0, count=10)},
         )
         result = _score_deal(350.0, stats, 7)
-        assert result in ("INSANE DEAL", "Great deal")
+        assert result in ("BUY NOW", "Strong buy")
 
     def test_new_all_time_low_gets_bonus(self):
         stats = _make_stats(
@@ -136,11 +136,11 @@ class TestScoreDeal:
             monthly={7: MonthlyStats(avg_price=700.0, count=10)},
         )
         result = _score_deal(400.0, stats, 7)
-        assert result in ("INSANE DEAL", "Great deal")
+        assert result in ("BUY NOW", "Strong buy")
 
     def test_price_above_median_is_fair(self):
         stats = _make_stats(overall_median=500.0, all_time_min=400.0)
-        assert _score_deal(600.0, stats, 7) == "Fair price"
+        assert _score_deal(600.0, stats, 7) == "Skip"
 
     def test_peak_month_bonus(self):
         """Cheap fare in a peak month (July) should score higher than shoulder."""
@@ -152,7 +152,7 @@ class TestScoreDeal:
                 3: MonthlyStats(avg_price=500.0, count=10),
             },
         )
-        labels = ["Fair price", "Decent", "Good deal", "Great deal", "INSANE DEAL"]
+        labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
         assert labels.index(_score_deal(400.0, stats, 7)) >= labels.index(
             _score_deal(400.0, stats, 3)
         )
@@ -170,7 +170,7 @@ class TestScoreDeal:
         """Bottom decile scoring should be disabled with < 20 observations."""
         stats_small = _make_stats(total_count=15, all_time_min=400.0, overall_median=600.0)
         stats_large = _make_stats(total_count=50, all_time_min=400.0, overall_median=600.0)
-        labels = ["Fair price", "Decent", "Good deal", "Great deal", "INSANE DEAL"]
+        labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
         assert labels.index(_score_deal(400.0, stats_small, 7)) <= labels.index(
             _score_deal(400.0, stats_large, 7)
         )

@@ -168,14 +168,14 @@ def _score_deal(price: float, stats: RouteStats | None, departure_month: int | N
     final_score = round(score)
 
     if final_score >= 80:
-        return "INSANE DEAL"
+        return "BUY NOW"
     elif final_score >= 60:
-        return "Great deal"
+        return "Strong buy"
     elif final_score >= 40:
-        return "Good deal"
+        return "Worth watching"
     elif final_score >= 20:
-        return "Decent"
-    return "Fair price"
+        return "Meh"
+    return "Skip"
 
 
 def _compute_nights(departure_date: str, return_date: str | None) -> int | None:
