@@ -11,6 +11,28 @@ from fli.tracker.models import Alert, AlertType, PriceSnapshot, Route
 
 logger = logging.getLogger(__name__)
 
+# Flights under this price re-alert on any further drop (even $1).
+_CHEAP_FLIGHT_THRESHOLD = 55.0
+
+
+def _min_improvement(last_notified: float) -> float:
+    """Return the minimum price drop required to re-alert, scaled by price band.
+
+    Uses a hybrid max(flat_floor, percent) rule so the threshold feels
+    meaningful across both cheap domestic and expensive international fares.
+
+    Band       Flat floor  Percent  Example threshold
+    $55-$199   $20         10%      $20 at $55, $19.9 -> uses $20
+    $200-$599  $30         8%       $36 at $450
+    $600+      $50         6%       $60 at $1000
+    """
+    if last_notified < 200:
+        return max(20.0, last_notified * 0.10)
+    elif last_notified < 600:
+        return max(30.0, last_notified * 0.08)
+    else:
+        return max(50.0, last_notified * 0.06)
+
 
 class AlertTrigger:
     """Represents a triggered alert with context for notification formatting.
@@ -86,13 +108,14 @@ def _evaluate_alert(
     Returns an AlertTrigger if the alert should fire, None otherwise.
     """
     if alert.alert_type == AlertType.DROP:
-        return _check_drop(alert, route, snapshot, previous_low)
+        return _check_drop(db, alert, route, snapshot, previous_low)
     elif alert.alert_type == AlertType.THRESHOLD:
         return _check_threshold(db, alert, route, snapshot)
     return None
 
 
 def _check_drop(
+    db: TrackerDB,
     alert: Alert,
     route: Route,
     snapshot: PriceSnapshot,
@@ -103,27 +126,44 @@ def _check_drop(
     A drop alert fires when the new price is strictly less than the
     historical minimum. If there is no history (first scan), it does
     not fire, because there is no drop to report.
+
+    Re-alert suppression: for flights at or above $55, only the first
+    notification fires. For flights under $55, any further price drop
+    (even $1) triggers a new alert.
     """
     if previous_low is None:
         return None
 
-    if snapshot.price < previous_low:
-        logger.info(
-            "Drop detected: %s -> %s on %s, $%.2f (was $%.2f)",
-            route.origin,
-            route.destination,
-            snapshot.departure_date,
-            snapshot.price,
-            previous_low,
-        )
-        return AlertTrigger(
-            alert=alert,
-            route=route,
-            snapshot=snapshot,
-            previous_low=previous_low,
-        )
+    if snapshot.price >= previous_low:
+        return None
 
-    return None
+    last_notified = db.get_last_notified_price(
+        alert.id, snapshot.departure_date, snapshot.return_date
+    )
+    if last_notified is not None:
+        if snapshot.price < _CHEAP_FLIGHT_THRESHOLD:
+            # Sub-$55 flight: re-alert on any further drop, even $1.
+            if snapshot.price >= last_notified:
+                return None
+        else:
+            # $55+ flight: only re-alert if improvement meets the price-scaled threshold.
+            if (last_notified - snapshot.price) < _min_improvement(last_notified):
+                return None
+
+    logger.info(
+        "Drop detected: %s -> %s on %s, $%.2f (was $%.2f)",
+        route.origin,
+        route.destination,
+        snapshot.departure_date,
+        snapshot.price,
+        previous_low,
+    )
+    return AlertTrigger(
+        alert=alert,
+        route=route,
+        snapshot=snapshot,
+        previous_low=previous_low,
+    )
 
 
 def _check_threshold(
@@ -143,10 +183,18 @@ def _check_threshold(
     if snapshot.price > alert.threshold:
         return None
 
-    if db.was_notification_sent(
-        alert.id, snapshot.departure_date, snapshot.price, snapshot.return_date
-    ):
-        return None
+    last_notified = db.get_last_notified_price(
+        alert.id, snapshot.departure_date, snapshot.return_date
+    )
+    if last_notified is not None:
+        if snapshot.price < _CHEAP_FLIGHT_THRESHOLD:
+            # Sub-$55 flight: re-alert on any further drop, even $1.
+            if snapshot.price >= last_notified:
+                return None
+        else:
+            # $55+ flight: only re-alert if improvement meets the price-scaled threshold.
+            if (last_notified - snapshot.price) < _min_improvement(last_notified):
+                return None
 
     logger.info(
         "Threshold met: %s -> %s on %s, $%.2f (threshold $%.2f)",

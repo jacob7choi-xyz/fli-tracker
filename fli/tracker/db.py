@@ -478,3 +478,34 @@ class TrackerDB:
                 (alert_id, departure_date, price),
             ).fetchone()
         return row is not None
+
+    def get_last_notified_price(
+        self,
+        alert_id: int,
+        departure_date: str,
+        return_date: str | None = None,
+    ) -> float | None:
+        """Return the lowest price already notified for this alert/date combo.
+
+        Used by the detector to suppress re-alerts when the new price is not
+        meaningfully different from what the user was already told about.
+        Returns the minimum (best) notified price so comparisons are against
+        the best deal the user has already seen.
+        """
+        if return_date is not None:
+            row = self._conn.execute(
+                """
+                SELECT MIN(price) FROM notification_log
+                WHERE alert_id = ? AND departure_date = ? AND return_date = ?
+                """,
+                (alert_id, departure_date, return_date),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT MIN(price) FROM notification_log
+                WHERE alert_id = ? AND departure_date = ? AND return_date IS NULL
+                """,
+                (alert_id, departure_date),
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
