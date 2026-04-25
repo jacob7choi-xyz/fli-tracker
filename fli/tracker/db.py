@@ -179,7 +179,7 @@ class TrackerDB:
                 """
                 SELECT * FROM routes
                 WHERE active = 1
-                  AND (snoozed_until IS NULL OR date(snoozed_until) < date('now'))
+                  AND (snoozed_until IS NULL OR date(snoozed_until) < date('now', 'localtime'))
                 """
             ).fetchall()
         else:
