@@ -146,7 +146,7 @@ def sweep(db: TrackerDB, group: RouteGroup | None = None) -> int:
 
     Args:
         db: The tracker database to read routes from and write snapshots to.
-        group: Optional route group filter ('domestic' or 'longhaul').
+        group: Optional route group filter ('domestic', 'coastal', or 'longhaul').
             When None, scans all active routes.
 
     Returns:

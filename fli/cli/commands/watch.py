@@ -19,7 +19,7 @@ def watch(
     ] = None,
     group: Annotated[
         str | None,
-        typer.Option("--group", "-g", help="Route group: 'domestic' or 'longhaul'"),
+        typer.Option("--group", "-g", help="Route group: 'domestic', 'coastal', or 'longhaul'"),
     ] = None,
     verbose: Annotated[
         bool,
@@ -33,12 +33,13 @@ def watch(
 
     Use --group to scan a subset of routes:
         fli watch --group domestic
+        fli watch --group coastal
         fli watch --group longhaul
     """
     if group is not None:
         group = group.lower()
-        if group not in ("domestic", "longhaul"):
-            typer.echo(f"Invalid group '{group}'. Use 'domestic' or 'longhaul'.")
+        if group not in ("domestic", "coastal", "longhaul"):
+            typer.echo(f"Invalid group '{group}'. Use 'domestic', 'coastal', or 'longhaul'.")
             raise typer.Exit(1)
 
     group_filter: RouteGroup | None = group  # type: ignore[assignment]
