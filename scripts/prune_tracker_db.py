@@ -12,7 +12,7 @@ import os
 import sqlite3
 
 db_path = os.environ["FLI_DB_PATH"]
-retention_days = int(os.environ.get("FLI_RETENTION_DAYS", "60"))
+retention_days = int(os.environ.get("FLI_RETENTION_DAYS", "21"))
 vacuum_threshold = float(os.environ.get("FLI_VACUUM_THRESHOLD", "0.20"))
 
 
