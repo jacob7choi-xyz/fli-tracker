@@ -66,24 +66,44 @@ jobs:
           db.close()
           "
 
+      - name: Record sweep start
+        run: echo "SWEEP_START=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+
       - name: Run coastal sweep
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
         run: uv run fli watch --group coastal --verbose
 
-      - name: Push updated DB
+      - name: Record sweep end
+        run: echo "SWEEP_END=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+
+      - name: Archive new snapshots
+        env:
+          FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
+          ARCHIVE_DIR: ${{ github.workspace }}/data/archive
+          SWEEP_GROUP: coastal
+          SWEEP_START: ${{ env.SWEEP_START }}
+          SWEEP_END: ${{ env.SWEEP_END }}
+        run: uv run python scripts/export_snapshots.py
+
+      - name: Push updated DB and archive
         working-directory: data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add tracker.db
+          git add archive/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No DB changes to commit"
+            echo "No changes to commit"
           else
             git commit -m "Update coastal prices $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git pull --rebase origin data
-            if ! git push; then
-              echo "::error::Failed to push updated DB to data branch"
-              exit 1
-            fi
+            for attempt in 1 2 3; do
+              git pull --rebase origin data && git push && break
+              if [ $attempt -eq 3 ]; then
+                echo "::error::Failed to push to data branch after 3 attempts"
+                exit 1
+              fi
+              echo "Push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            done
           fi
