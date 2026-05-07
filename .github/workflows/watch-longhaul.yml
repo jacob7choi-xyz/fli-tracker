@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: price-watch-longhaul
+  group: data-branch-write
   cancel-in-progress: false
 
 jobs:
