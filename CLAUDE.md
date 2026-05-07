@@ -309,3 +309,7 @@ direct. Three similar lines of code is better than a premature abstraction.
   `except Exception`. Broad catches are acceptable only at external API
   boundaries (network calls, third-party libraries) where many exception
   types are possible.
+- **Update CLI guards when extending enums/literals.** When a new value is
+  added to a `Literal` type or enum (e.g., `RouteGroup`), search for every
+  hardcoded allowlist that validates that type in CLI commands and update
+  them in the same commit. The type system does not catch string allowlists.
