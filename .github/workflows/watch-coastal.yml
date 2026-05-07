@@ -42,30 +42,7 @@ jobs:
       - name: Prune old snapshots
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
-        run: |
-          uv run python -c "
-          import sqlite3, os
-          db_path = os.environ['FLI_DB_PATH']
-          conn = sqlite3.connect(db_path)
-          conn.execute('''DELETE FROM price_snapshots WHERE date(scanned_at) < date('now', 'localtime', '-60 days')''')
-          deleted = conn.total_changes
-          conn.commit()
-          conn.close()
-          print(f'Pruned {deleted} old snapshots')
-          conn2 = sqlite3.connect(db_path)
-          page_count = conn2.execute('PRAGMA page_count').fetchone()[0]
-          freelist = conn2.execute('PRAGMA freelist_count').fetchone()[0]
-          conn2.close()
-          ratio = freelist / page_count if page_count > 0 else 0
-          print(f'Freelist ratio: {ratio:.2%} ({freelist}/{page_count} pages)')
-          if ratio > 0.20:
-              conn3 = sqlite3.connect(db_path)
-              conn3.execute('VACUUM')
-              conn3.close()
-              print('VACUUM done')
-          else:
-              print('VACUUM skipped')
-          "
+        run: uv run python scripts/prune_tracker_db.py
 
       - name: Update alert URLs from secret
         env:
