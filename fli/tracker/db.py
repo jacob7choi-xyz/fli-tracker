@@ -5,6 +5,7 @@ alert configuration, and notification logging.
 """
 
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime
@@ -362,6 +363,66 @@ class TrackerDB:
         ).fetchone()
         days_of_history = days_row["days"] if days_row else 0
 
+        # Mean and sample standard deviation
+        price_mean = sum(prices) / total_count
+        if total_count > 1:
+            variance = sum((p - price_mean) ** 2 for p in prices) / (total_count - 1)
+            price_stddev: float | None = math.sqrt(variance)
+        else:
+            price_stddev = None
+
+        # Key percentile breakpoints from the sorted prices list
+        def _pct(p: int) -> float:
+            idx = max(0, min(total_count - 1, int(total_count * p / 100)))
+            return prices[idx]
+
+        price_percentiles = {10: _pct(10), 25: _pct(25), 50: _pct(50), 75: _pct(75), 90: _pct(90)}
+
+        # 14-day rolling volatility: std dev of daily average prices
+        daily_rows = self._conn.execute(
+            """
+            SELECT AVG(price) AS avg_p
+            FROM price_snapshots
+            WHERE route_id = ?
+            GROUP BY date(scanned_at)
+            ORDER BY date(scanned_at) DESC
+            LIMIT 14
+            """,
+            (route_id,),
+        ).fetchall()
+        daily_avgs = [float(r["avg_p"]) for r in daily_rows]
+        if len(daily_avgs) > 1:
+            d_mean = sum(daily_avgs) / len(daily_avgs)
+            d_var = sum((x - d_mean) ** 2 for x in daily_avgs) / (len(daily_avgs) - 1)
+            volatility_14d: float | None = math.sqrt(d_var)
+        else:
+            volatility_14d = None
+
+        # Lead-time bucket averages (days before departure at scan time)
+        lt_rows = self._conn.execute(
+            """
+            SELECT
+                CASE
+                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 0 AND 7
+                        THEN '0-7'
+                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 8 AND 14
+                        THEN '8-14'
+                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 15 AND 30
+                        THEN '15-30'
+                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 31 AND 60
+                        THEN '31-60'
+                    ELSE NULL
+                END AS bucket,
+                AVG(price) AS avg_p
+            FROM price_snapshots
+            WHERE route_id = ? AND departure_date > date(scanned_at)
+            GROUP BY bucket
+            HAVING bucket IS NOT NULL
+            """,
+            (route_id,),
+        ).fetchall()
+        lead_time_buckets = {str(r["bucket"]): float(r["avg_p"]) for r in lt_rows}
+
         # Monthly averages and counts (month = 1-12 from departure_date)
         monthly_rows = self._conn.execute(
             """
@@ -385,6 +446,11 @@ class TrackerDB:
             total_count=total_count,
             days_of_history=days_of_history,
             monthly=monthly,
+            price_mean=price_mean,
+            price_stddev=price_stddev,
+            volatility_14d=volatility_14d,
+            lead_time_buckets=lead_time_buckets,
+            price_percentiles=price_percentiles,
         )
 
     @staticmethod

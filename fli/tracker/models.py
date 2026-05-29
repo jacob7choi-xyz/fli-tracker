@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Annotated
 
 from annotated_types import MinLen
-from pydantic import BaseModel, NonNegativeFloat, PositiveInt
+from pydantic import BaseModel, Field, NonNegativeFloat, PositiveInt
 
 
 class AlertType(StrEnum):
@@ -97,3 +97,8 @@ class RouteStats(BaseModel):
     total_count: int
     days_of_history: int
     monthly: dict[int, MonthlyStats]
+    price_mean: float = 0.0
+    price_stddev: float | None = None
+    volatility_14d: float | None = None
+    lead_time_buckets: dict[str, float] = Field(default_factory=dict)
+    price_percentiles: dict[int, float] = Field(default_factory=dict)

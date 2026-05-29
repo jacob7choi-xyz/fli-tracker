@@ -18,8 +18,10 @@ from fli.tracker.notifier import (
     _build_title,
     _build_trend_line,
     _compute_nights,
+    _compute_percentile_rank,
     _format_perks,
     _is_domestic_route,
+    _lead_time_bucket,
     _score_deal,
     format_digest,
     format_message,
@@ -81,17 +83,94 @@ def _make_stats(
     total_count: int = 50,
     days_of_history: int = 30,
     monthly: dict[int, MonthlyStats] | None = None,
+    price_mean: float | None = None,
+    price_stddev: float | None = None,
+    price_percentiles: dict[int, float] | None = None,
+    lead_time_buckets: dict[str, float] | None = None,
 ) -> RouteStats:
-    """Build RouteStats for scoring tests."""
+    """Build RouteStats for scoring tests with sensible defaults for new fields."""
     if monthly is None:
         monthly = {7: MonthlyStats(avg_price=600.0, count=10)}
+    if price_mean is None:
+        price_mean = overall_median
+    if price_stddev is None:
+        price_stddev = overall_median * 0.15
+    if price_percentiles is None:
+        spread = overall_median - all_time_min
+        price_percentiles = {
+            10: all_time_min,
+            25: all_time_min + spread * 0.3,
+            50: overall_median,
+            75: overall_median + spread * 0.5,
+            90: overall_median + spread * 0.9,
+        }
     return RouteStats(
         all_time_min=all_time_min,
         overall_median=overall_median,
         total_count=total_count,
         days_of_history=days_of_history,
         monthly=monthly,
+        price_mean=price_mean,
+        price_stddev=price_stddev,
+        price_percentiles=price_percentiles,
+        lead_time_buckets=lead_time_buckets or {},
     )
+
+
+class TestLeadTimeBucket:
+    """Tests for lead-time bucket assignment."""
+
+    @pytest.mark.parametrize(
+        ("lead_days", "expected"),
+        [
+            (-1, None),
+            (0, "0-7"),
+            (7, "0-7"),
+            (8, "8-14"),
+            (14, "8-14"),
+            (15, "15-30"),
+            (30, "15-30"),
+            (31, "31-60"),
+            (60, "31-60"),
+            (61, None),
+            (90, None),
+        ],
+    )
+    def test_bucket_assignment(self, lead_days, expected):
+        assert _lead_time_bucket(lead_days) == expected
+
+
+class TestComputePercentileRank:
+    """Tests for interpolated percentile rank estimation."""
+
+    PERCENTILES = {10: 100.0, 25: 200.0, 50: 400.0, 75: 600.0, 90: 750.0}
+
+    @pytest.mark.parametrize(
+        ("price", "expected_range"),
+        [
+            (50.0, (0.0, 10.0)),    # below p10
+            (100.0, (10.0, 10.0)),  # at p10
+            (150.0, (10.0, 25.0)),  # between p10 and p25
+            (200.0, (25.0, 25.0)),  # at p25
+            (400.0, (50.0, 50.0)),  # at p50 (median)
+            (600.0, (75.0, 75.0)),  # at p75
+            (800.0, (90.0, 100.0)), # above p90
+        ],
+    )
+    def test_rank_in_expected_range(self, price, expected_range):
+        rank = _compute_percentile_rank(price, self.PERCENTILES)
+        lo, hi = expected_range
+        assert lo <= rank <= hi, f"price={price} rank={rank} not in [{lo}, {hi}]"
+
+    def test_empty_percentiles_returns_midpoint(self):
+        assert _compute_percentile_rank(500.0, {}) == 50.0
+
+    def test_rank_monotone_with_price(self):
+        """Higher price should yield higher (or equal) percentile rank."""
+        prices = [100.0, 200.0, 300.0, 400.0, 600.0, 750.0, 900.0]
+        ranks = [_compute_percentile_rank(p, self.PERCENTILES) for p in prices]
+        for i in range(len(ranks) - 1):
+            assert ranks[i] <= ranks[i + 1]
 
 
 class TestScoreDeal:
@@ -114,11 +193,11 @@ class TestScoreDeal:
         ],
     )
     def test_confidence_gate(self, stats, expected):
-        assert _score_deal(450.0, stats, 7) == expected
+        assert _score_deal(450.0, stats, "2026-07-15") == expected
 
     def test_price_at_median_scores_low(self):
         stats = _make_stats(overall_median=500.0, all_time_min=400.0)
-        result = _score_deal(500.0, stats, 7)
+        result = _score_deal(500.0, stats, "2026-07-15")
         assert result in ("Skip", "Meh")
 
     def test_price_well_below_median_scores_high(self):
@@ -127,21 +206,23 @@ class TestScoreDeal:
             all_time_min=350.0,
             monthly={7: MonthlyStats(avg_price=800.0, count=10)},
         )
-        result = _score_deal(350.0, stats, 7)
+        result = _score_deal(350.0, stats, "2026-07-15")
         assert result in ("BUY NOW", "Strong buy")
 
-    def test_new_all_time_low_gets_bonus(self):
+    def test_price_well_below_mean_gets_high_z_score(self):
+        """Price 2+ std devs below mean hits the z-score ceiling."""
         stats = _make_stats(
             overall_median=700.0,
             all_time_min=450.0,
-            monthly={7: MonthlyStats(avg_price=700.0, count=10)},
+            price_mean=700.0,
+            price_stddev=100.0,
         )
-        result = _score_deal(400.0, stats, 7)
+        result = _score_deal(400.0, stats, "2026-07-15")
         assert result in ("BUY NOW", "Strong buy")
 
-    def test_price_above_median_is_fair(self):
+    def test_price_above_median_scores_skip(self):
         stats = _make_stats(overall_median=500.0, all_time_min=400.0)
-        assert _score_deal(600.0, stats, 7) == "Skip"
+        assert _score_deal(600.0, stats, "2026-07-15") == "Skip"
 
     def test_peak_month_bonus(self):
         """Cheap fare in a peak month (July) should score higher than shoulder."""
@@ -154,8 +235,8 @@ class TestScoreDeal:
             },
         )
         labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
-        assert labels.index(_score_deal(400.0, stats, 7)) >= labels.index(
-            _score_deal(400.0, stats, 3)
+        assert labels.index(_score_deal(400.0, stats, "2026-07-15")) >= labels.index(
+            _score_deal(400.0, stats, "2026-03-15")
         )
 
     def test_thin_month_data_skips_seasonality(self):
@@ -165,21 +246,35 @@ class TestScoreDeal:
             all_time_min=400.0,
             monthly={7: MonthlyStats(avg_price=700.0, count=2)},
         )
-        assert _score_deal(400.0, stats, 7) != "Building history..."
+        assert _score_deal(400.0, stats, "2026-07-15") != "Building history..."
 
-    def test_decile_gated_on_sample_size(self):
-        """Bottom decile scoring should be disabled with < 20 observations."""
-        stats_small = _make_stats(total_count=15, all_time_min=400.0, overall_median=600.0)
-        stats_large = _make_stats(total_count=50, all_time_min=400.0, overall_median=600.0)
-        labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
-        assert labels.index(_score_deal(400.0, stats_small, 7)) <= labels.index(
-            _score_deal(400.0, stats_large, 7)
-        )
-
-    def test_no_departure_month(self):
-        """None departure month should still score without seasonality."""
+    def test_no_departure_date(self):
+        """None departure date should still score using z-score and percentile only."""
         stats = _make_stats()
         assert _score_deal(400.0, stats, None) != "Building history..."
+
+    def test_lead_time_component_raises_score(self):
+        """Price below the lead-time bucket average adds to the score."""
+        bucket_avg = 600.0
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            price_mean=600.0,
+            price_stddev=90.0,
+            lead_time_buckets={"31-60": bucket_avg},
+        )
+        # Score with a lead-time discount (31-60 days out, price well below bucket avg)
+        from datetime import date, timedelta
+        dep_date = (date.today() + timedelta(days=45)).isoformat()
+        result_with_lt = _score_deal(400.0, stats, dep_date)
+        result_no_lt = _score_deal(400.0, _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            price_mean=600.0,
+            price_stddev=90.0,
+        ), dep_date)
+        labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
+        assert labels.index(result_with_lt) >= labels.index(result_no_lt)
 
 
 class TestBuildTrendLine:
@@ -194,7 +289,7 @@ class TestBuildTrendLine:
         ],
     )
     def test_returns_none_when_insufficient_data(self, stats):
-        assert _build_trend_line(450.0, stats, 7) is None
+        assert _build_trend_line(450.0, stats, "2026-07-15") is None
 
     def test_below_median(self):
         stats = _make_stats(overall_median=600.0, all_time_min=300.0)
@@ -241,7 +336,7 @@ class TestBuildTrendLine:
             monthly={7: MonthlyStats(avg_price=700.0, count=10)},
         )
         # 560 is 20% below Jul avg of 700 -- should appear
-        result = _build_trend_line(560.0, stats, 7)
+        result = _build_trend_line(560.0, stats, "2026-07-15")
         assert result is not None
         assert "Jul" in result
 
@@ -252,8 +347,31 @@ class TestBuildTrendLine:
             monthly={7: MonthlyStats(avg_price=620.0, count=10)},
         )
         # 580 is ~6% below 620 -- below 10% threshold, should be omitted
-        result = _build_trend_line(580.0, stats, 7)
+        result = _build_trend_line(580.0, stats, "2026-07-15")
         assert result is None or "Jul" not in result
+
+    def test_percentile_rank_shown_in_bottom_quartile(self):
+        """Prices in the bottom 25% should show percentile context."""
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            price_percentiles={10: 420.0, 25: 470.0, 50: 600.0, 75: 720.0, 90: 800.0},
+        )
+        # 450 is between p10 and p25 -- bottom ~20th percentile
+        result = _build_trend_line(450.0, stats, None)
+        assert result is not None
+        assert "bottom" in result and "%" in result
+
+    def test_percentile_rank_omitted_above_quartile(self):
+        """Prices above the 25th percentile should not show percentile context."""
+        stats = _make_stats(
+            overall_median=600.0,
+            all_time_min=400.0,
+            price_percentiles={10: 420.0, 25: 470.0, 50: 600.0, 75: 720.0, 90: 800.0},
+        )
+        # 550 is between p25 and p50 -- not in bottom quartile
+        result = _build_trend_line(550.0, stats, None)
+        assert result is None or "bottom" not in result
 
     def test_monthly_context_omitted_when_thin_data(self):
         stats = _make_stats(
@@ -261,7 +379,7 @@ class TestBuildTrendLine:
             all_time_min=400.0,
             monthly={7: MonthlyStats(avg_price=700.0, count=2)},
         )
-        result = _build_trend_line(400.0, stats, 7)
+        result = _build_trend_line(400.0, stats, "2026-07-15")
         assert result is None or "Jul" not in result
 
     def test_parts_joined_by_semicolon(self):

@@ -36,10 +36,55 @@ except ImportError:
 _MIN_SNAPSHOTS = 10
 _MIN_DAYS = 14
 _MIN_MONTH_SAMPLES = 5
-_MIN_DECILE_SAMPLES = 20
 
 # Peak travel months (higher scores for cheap fares in expensive seasons)
 _PEAK_MONTHS = {6, 7, 8, 12}
+
+
+def _lead_time_bucket(lead_days: int) -> str | None:
+    """Map days-before-departure to a lead-time bucket label."""
+    if lead_days < 0:
+        return None
+    if lead_days <= 7:
+        return "0-7"
+    if lead_days <= 14:
+        return "8-14"
+    if lead_days <= 30:
+        return "15-30"
+    if lead_days <= 60:
+        return "31-60"
+    return None
+
+
+def _compute_percentile_rank(price: float, percentiles: dict[int, float]) -> float:
+    """Estimate where price falls in the route's empirical distribution (0-100).
+
+    0 = at or below the observed minimum, 100 = at or above the observed maximum.
+    Uses linear interpolation between known breakpoints (p10, p25, p50, p75, p90).
+    """
+    if not percentiles:
+        return 50.0
+
+    breakpoints = sorted(percentiles.items())
+    pct_lo, val_lo = breakpoints[0]
+
+    if price <= val_lo:
+        return max(0.0, pct_lo * price / val_lo) if val_lo > 0 else 0.0
+
+    pct_hi, val_hi = breakpoints[-1]
+    if price >= val_hi:
+        return min(100.0, pct_hi + (price - val_hi) / max(val_hi, 1.0) * 10.0)
+
+    for i in range(len(breakpoints) - 1):
+        pct_lo, val_lo = breakpoints[i]
+        pct_hi, val_hi = breakpoints[i + 1]
+        if val_lo <= price <= val_hi:
+            if val_hi == val_lo:
+                return float(pct_lo)
+            frac = (price - val_lo) / (val_hi - val_lo)
+            return pct_lo + frac * (pct_hi - pct_lo)
+
+    return 50.0
 
 def _load_airport_locations() -> dict[str, str]:
     """Load airport city/location labels from the bundled CSV package data.
@@ -100,97 +145,110 @@ def _format_route_label(origin: str, destination: str) -> str:
     return f"{origin} ({orig_city}) -> {destination} ({dest_city})"
 
 
-def _score_deal(price: float, stats: RouteStats | None, departure_month: int | None) -> str:
-    """Score a deal using historical price distribution.
+def _score_deal(price: float, stats: RouteStats | None, departure_date: str | None) -> str:
+    """Score a deal using the route's historical price distribution.
 
-    Returns a label string. When insufficient data exists, returns
-    "Building history..." instead of a potentially misleading rating.
+    Composite 0-100 score with four components:
+      Z-score (0-40):        how many std devs below the route mean
+      Percentile rank (0-30): position in the empirical distribution
+      Lead-time (0-20):      vs. typical price for this booking window
+      Seasonality (0-10):    cheap fare during peak travel months
 
-    Scoring (0-100):
-      Route price value (0-65):
-        - Below median:       0-30 pts
-        - Beat historical low: 0-20 pts
-        - Near bottom decile:  0-15 pts (gated on 20+ observations)
-      Seasonality (0-35):
-        - Below month average: 0-25 pts (gated on 5+ month observations)
-        - Peak month bonus:    0-10 pts
+    Returns a label string. Logs score breakdown at DEBUG level.
+    When insufficient data exists, returns "Building history...".
     """
     if stats is None:
         return "Building history..."
-
     if stats.total_count < _MIN_SNAPSHOTS or stats.days_of_history < _MIN_DAYS:
         return "Building history..."
 
     score = 0.0
+    components: dict[str, object] = {}
 
-    # --- Route price value (0-65) ---
+    # --- Z-score component (0-40) ---
+    if stats.price_stddev and stats.price_stddev > 0:
+        z = (price - stats.price_mean) / stats.price_stddev
+        z_pts = max(0.0, min(40.0, -z * 20.0))
+        score += z_pts
+        components["z"] = round(z, 2)
+        components["z_pts"] = round(z_pts, 1)
 
-    # Below median (0-30): linear scale from median to 0
-    if stats.overall_median > 0:
-        discount_ratio = 1 - (price / stats.overall_median)
-        # Clamp: 0 if at/above median, 1.0 if free
-        discount_ratio = max(0.0, min(1.0, discount_ratio))
-        score += discount_ratio * 30
+    # --- Percentile rank component (0-30) ---
+    if stats.price_percentiles:
+        pct_rank = _compute_percentile_rank(price, stats.price_percentiles)
+        pct_pts = max(0.0, (50.0 - pct_rank) / 50.0 * 30.0)
+        score += pct_pts
+        components["pct_rank"] = round(pct_rank, 1)
+        components["pct_pts"] = round(pct_pts, 1)
 
-    # Beat historical low (0-20): 20 if at or below, partial credit near it
-    if stats.all_time_min > 0:
-        ratio = price / stats.all_time_min
-        if ratio <= 1.0:
-            score += 20
-        elif ratio <= 1.1:
-            # Within 10% of the low: linear from 20 down to 0
-            score += 20 * (1.1 - ratio) / 0.1
-        # Above 110% of low: 0 pts
+    # --- Lead-time component (0-20) ---
+    if departure_date and stats.lead_time_buckets:
+        try:
+            from datetime import date as _date
+            dep = _date.fromisoformat(departure_date)
+            lead_days = (dep - _date.today()).days
+            bucket = _lead_time_bucket(lead_days)
+            bucket_avg = stats.lead_time_buckets.get(bucket) if bucket else None
+            if bucket_avg and bucket_avg > 0:
+                lt_discount = (bucket_avg - price) / bucket_avg
+                lt_pts = max(0.0, min(20.0, lt_discount * 40.0))
+                score += lt_pts
+                components["lt_bucket"] = bucket
+                components["lt_discount_pct"] = round(lt_discount * 100, 1)
+                components["lt_pts"] = round(lt_pts, 1)
+        except ValueError:
+            pass
 
-    # Near bottom decile (0-15): gated on sufficient sample size
-    if stats.total_count >= _MIN_DECILE_SAMPLES and stats.all_time_min > 0:
-        # Approximate: how close to the min vs the median
-        if stats.overall_median > stats.all_time_min:
-            position = (price - stats.all_time_min) / (
-                stats.overall_median - stats.all_time_min
-            )
-            position = max(0.0, min(1.0, position))
-            score += (1 - position) * 15
-
-    # --- Seasonality (0-35) ---
-
-    if departure_month is not None and departure_month in stats.monthly:
-        month_stats = stats.monthly[departure_month]
+    # --- Seasonality bonus (0-10) ---
+    dep_month = None
+    if departure_date:
+        try:
+            dep_month = int(departure_date.split("-")[1])
+        except (IndexError, ValueError):
+            pass
+    if dep_month is not None and dep_month in _PEAK_MONTHS and dep_month in stats.monthly:
+        month_stats = stats.monthly[dep_month]
         if month_stats.count >= _MIN_MONTH_SAMPLES and month_stats.avg_price > 0:
-            # Below month average (0-25)
-            month_discount = 1 - (price / month_stats.avg_price)
-            month_discount = max(0.0, min(1.0, month_discount))
-            score += month_discount * 25
-
-            # Peak month bonus (0-10): extra credit for cheap in expensive months
-            if departure_month in _PEAK_MONTHS and month_discount > 0.1:
-                score += min(month_discount * 15, 10)
+            month_discount = (month_stats.avg_price - price) / month_stats.avg_price
+            if month_discount > 0.05:
+                peak_pts = min(10.0, month_discount * 20.0)
+                score += peak_pts
+                components["peak_pts"] = round(peak_pts, 1)
 
     final_score = round(score)
+    components["total"] = final_score
+    logger.debug("Deal score $%.0f (dep=%s): %s", price, departure_date, components)
 
     if final_score >= 80:
         return "BUY NOW"
-    elif final_score >= 60:
+    if final_score >= 60:
         return "Strong buy"
-    elif final_score >= 40:
+    if final_score >= 40:
         return "Worth watching"
-    elif final_score >= 20:
+    if final_score >= 20:
         return "Meh"
     return "Skip"
 
 
 def _build_trend_line(
-    price: float, stats: RouteStats | None, departure_month: int | None
+    price: float, stats: RouteStats | None, departure_date: str | None
 ) -> str | None:
-    """Build a compact trend summary, e.g. '38% below median; new 21d low'.
+    """Build a compact trend summary, e.g. '38% below median; bottom 18% of prices'.
 
     Returns None when there is insufficient data to make a meaningful claim.
-    Parts are ordered: median context, all-time-low context, monthly (bonus only).
+    Parts: median context, all-time-low, percentile rank, lead-time, monthly bonus.
     """
     if stats is None:
         return None
     if stats.total_count < _MIN_SNAPSHOTS or stats.days_of_history < _MIN_DAYS:
         return None
+
+    dep_month = None
+    if departure_date:
+        try:
+            dep_month = int(departure_date.split("-")[1])
+        except (IndexError, ValueError):
+            pass
 
     parts = []
 
@@ -215,13 +273,34 @@ def _build_trend_line(
             above = price - stats.all_time_min
             parts.append(f"${above:.0f} above all-time low")
 
-    # 3. vs. monthly avg (bonus only when notably below: >=10% discount, >=5 samples)
-    if departure_month is not None and departure_month in stats.monthly:
-        month_stats = stats.monthly[departure_month]
+    # 3. Percentile rank (only if in bottom quartile -- adds meaningful context)
+    if stats.price_percentiles:
+        pct_rank = _compute_percentile_rank(price, stats.price_percentiles)
+        if pct_rank <= 25:
+            parts.append(f"bottom {pct_rank:.0f}% of prices")
+
+    # 4. Lead-time context (only if >= 10% below bucket avg)
+    if departure_date and stats.lead_time_buckets:
+        try:
+            from datetime import date as _date
+            dep = _date.fromisoformat(departure_date)
+            lead_days = (dep - _date.today()).days
+            bucket = _lead_time_bucket(lead_days)
+            bucket_avg = stats.lead_time_buckets.get(bucket) if bucket else None
+            if bucket_avg and bucket_avg > 0:
+                lt_pct = (bucket_avg - price) / bucket_avg * 100
+                if lt_pct >= 10:
+                    parts.append(f"{lt_pct:.0f}% below {bucket}d avg")
+        except ValueError:
+            pass
+
+    # 5. vs. monthly avg (bonus only when notably below: >=10% discount, >=5 samples)
+    if dep_month is not None and dep_month in stats.monthly:
+        month_stats = stats.monthly[dep_month]
         if month_stats.count >= _MIN_MONTH_SAMPLES and month_stats.avg_price > 0:
             month_pct = (month_stats.avg_price - price) / month_stats.avg_price * 100
             if month_pct >= 10:
-                month_name = datetime(2000, departure_month, 1).strftime("%b")
+                month_name = datetime(2000, dep_month, 1).strftime("%b")
                 parts.append(f"{month_pct:.0f}% below {month_name} avg")
 
     return "; ".join(parts) if parts else None
@@ -508,14 +587,9 @@ def format_message(
         lines.append(f"Threshold: ${trigger.alert.threshold:.0f}")
 
     # Deal rating (data-driven scoring)
-    departure_month = None
-    try:
-        departure_month = int(snap.departure_date.split("-")[1])
-    except (IndexError, ValueError):
-        pass
-    deal = _score_deal(snap.price, _stats, departure_month)
+    deal = _score_deal(snap.price, _stats, snap.departure_date)
     lines.append(f"Deal quality: {deal}")
-    trend = _build_trend_line(snap.price, _stats, departure_month)
+    trend = _build_trend_line(snap.price, _stats, snap.departure_date)
     if trend:
         lines.append(f"Trend: {trend}")
 
@@ -628,13 +702,8 @@ def _render_trigger_block(
     stats = db.get_route_stats(route.id)
 
     # Deal rating
-    departure_month = None
-    try:
-        departure_month = int(snap.departure_date.split("-")[1])
-    except (IndexError, ValueError):
-        pass
-    deal = _score_deal(snap.price, stats, departure_month)
-    trend = _build_trend_line(snap.price, stats, departure_month)
+    deal = _score_deal(snap.price, stats, snap.departure_date)
+    trend = _build_trend_line(snap.price, stats, snap.departure_date)
     trend_html = (
         f'<div style="font-size:12px;color:#888;margin:2px 0;">{html.escape(trend)}</div>'
         if trend else ""
@@ -862,12 +931,7 @@ def _build_title(
 ) -> str:
     """Build a short notification title with deal rating."""
     route = trigger.route
-    departure_month = None
-    try:
-        departure_month = int(trigger.snapshot.departure_date.split("-")[1])
-    except (IndexError, ValueError):
-        pass
-    deal = _score_deal(trigger.snapshot.price, _stats, departure_month)
+    deal = _score_deal(trigger.snapshot.price, _stats, trigger.snapshot.departure_date)
     if trigger.alert.alert_type == AlertType.DROP:
         return f"Price Drop ({deal}): {route.origin} -> {route.destination}"
     return f"Price Alert ({deal}): {route.origin} -> {route.destination}"
