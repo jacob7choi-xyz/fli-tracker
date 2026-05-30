@@ -313,3 +313,25 @@ direct. Three similar lines of code is better than a premature abstraction.
   added to a `Literal` type or enum (e.g., `RouteGroup`), search for every
   hardcoded allowlist that validates that type in CLI commands and update
   them in the same commit. The type system does not catch string allowlists.
+- **Don't validate scoring weights without labeled data.** Validating a
+  composite scorer requires ground truth: which outputs the user actually
+  acted on. Features (z-score, percentile, lead-time) can be validated
+  against the distribution. Weights between components cannot be validated
+  without a labeled dataset. Never present hand-picked weights as empirically
+  validated. Flag this distinction explicitly when building scoring systems.
+- **Cache DB lookups before render loops.** When rendering a list of items
+  that each require an expensive lookup keyed by ID (e.g., route stats per
+  trigger), build a cache dict before the loop. Never call the same query
+  inside a render loop -- that is an N+1 pattern that scales with list size.
+- **SQL schema order matters.** In executescript() schemas, indexes must come
+  after the tables they reference. If a table is created via migration (ALTER
+  TABLE), its indexes must also go in _migrate(), not in the base SCHEMA_SQL.
+- **Parameterize all SQL, even when safe.** Never use f-string or string
+  interpolation in SQL queries, even when the interpolated value is safe
+  (e.g., cast to int). Use parameterized queries exclusively. The pattern is
+  wrong regardless of whether injection is actually possible.
+- **html.escape() all variable data in HTML templates.** When building HTML
+  strings, apply html.escape() to every variable -- city names from CSV,
+  labels from external APIs, any string not hardcoded in the source. Apply
+  it consistently: if trend is escaped and orig_city is not, that is a bug
+  waiting to happen even if the current data source is trusted.
