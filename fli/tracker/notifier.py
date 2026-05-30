@@ -701,9 +701,17 @@ def _render_trigger_block(
     snap = trigger.snapshot
     stats = db.get_route_stats(route.id)
 
-    # Deal rating
-    deal = _score_deal(snap.price, stats, snap.departure_date)
-    trend = _build_trend_line(snap.price, stats, snap.departure_date)
+    # Must-buy check: bypass scorer if price is below the must_buy threshold
+    is_must_buy = (
+        route.must_buy_price is not None
+        and snap.price <= route.must_buy_price
+    )
+    if is_must_buy:
+        deal = "MUST BUY"
+        trend = None
+    else:
+        deal = _score_deal(snap.price, stats, snap.departure_date)
+        trend = _build_trend_line(snap.price, stats, snap.departure_date)
     trend_html = (
         f'<div style="font-size:12px;color:#888;margin:2px 0;">{html.escape(trend)}</div>'
         if trend else ""
@@ -750,9 +758,18 @@ def _render_trigger_block(
     legs = fetch_flight_details(trigger)
     flight_html = _render_legs_html(legs) if legs else ""
 
+    border_color = "#d93025" if is_must_buy else "#4a90d9"
+    bg_color = "#fff8f7" if is_must_buy else "#f8f9fa"
+    must_buy_banner = (
+        '<div style="font-size:11px;font-weight:bold;color:#d93025;'
+        'letter-spacing:0.05em;margin-bottom:4px;">MUST BUY -- below steal threshold</div>'
+        if is_must_buy else ""
+    )
+
     return (
         f'<div style="margin-bottom:20px;padding:12px;'
-        f'border-left:3px solid #4a90d9;background:#f8f9fa;">'
+        f'border-left:3px solid {border_color};background:{bg_color};">'
+        f'{must_buy_banner}'
         f'<div style="font-size:16px;font-weight:bold;">'
         f'{index}. {route.origin} -> {route.destination}</div>'
         f'<div style="font-size:13px;color:#666;">'
@@ -864,10 +881,14 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     if not triggers:
         return 0
 
-    # Filter out triggers above the route's max_price
+    # Filter out triggers above the route's max_price, unless they hit must_buy_price
     filtered = []
     for t in triggers:
-        if t.route.max_price is not None and t.snapshot.price > t.route.max_price:
+        is_must_buy = (
+            t.route.must_buy_price is not None
+            and t.snapshot.price <= t.route.must_buy_price
+        )
+        if not is_must_buy and t.route.max_price is not None and t.snapshot.price > t.route.max_price:
             logger.info(
                 "Skipping %s -> %s ($%.0f > $%.0f max) for digest",
                 t.route.origin, t.route.destination, t.snapshot.price, t.route.max_price,
@@ -931,7 +952,10 @@ def _build_title(
 ) -> str:
     """Build a short notification title with deal rating."""
     route = trigger.route
-    deal = _score_deal(trigger.snapshot.price, _stats, trigger.snapshot.departure_date)
+    snap = trigger.snapshot
+    if route.must_buy_price is not None and snap.price <= route.must_buy_price:
+        return f"MUST BUY: {route.origin} -> {route.destination} ${snap.price:.0f}"
+    deal = _score_deal(snap.price, _stats, snap.departure_date)
     if trigger.alert.alert_type == AlertType.DROP:
         return f"Price Drop ({deal}): {route.origin} -> {route.destination}"
     return f"Price Alert ({deal}): {route.origin} -> {route.destination}"

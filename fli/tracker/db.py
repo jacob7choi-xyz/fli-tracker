@@ -124,6 +124,8 @@ class TrackerDB:
             self._conn.execute("ALTER TABLE routes ADD COLUMN max_price REAL")
         if "snoozed_until" not in route_cols:
             self._conn.execute("ALTER TABLE routes ADD COLUMN snoozed_until TEXT")
+        if "must_buy_price" not in route_cols:
+            self._conn.execute("ALTER TABLE routes ADD COLUMN must_buy_price REAL")
 
         self._conn.commit()
 
@@ -141,8 +143,8 @@ class TrackerDB:
             """
             INSERT INTO routes (origin, destination, cabin_class, max_stops,
                                 trip_duration, look_ahead, is_round_trip, active,
-                                durations, max_price)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                durations, max_price, must_buy_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 route.origin,
@@ -155,6 +157,7 @@ class TrackerDB:
                 int(route.active),
                 json.dumps(route.durations),
                 route.max_price,
+                route.must_buy_price,
             ),
         )
         self._conn.commit()
@@ -192,6 +195,15 @@ class TrackerDB:
         cur = self._conn.execute(
             "UPDATE routes SET max_price = ? WHERE id = ?",
             (max_price, route_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def update_route_must_buy_price(self, route_id: int, must_buy_price: float | None) -> bool:
+        """Update the must_buy_price threshold for a route. Returns True if the row existed."""
+        cur = self._conn.execute(
+            "UPDATE routes SET must_buy_price = ? WHERE id = ?",
+            (must_buy_price, route_id),
         )
         self._conn.commit()
         return cur.rowcount > 0
@@ -252,6 +264,7 @@ class TrackerDB:
             durations = [row["trip_duration"]]
 
         max_price_raw = row["max_price"] if "max_price" in row.keys() else None
+        must_buy_price_raw = row["must_buy_price"] if "must_buy_price" in row.keys() else None
         snoozed_until_raw = row["snoozed_until"] if "snoozed_until" in row.keys() else None
 
         return Route(
@@ -264,6 +277,7 @@ class TrackerDB:
             look_ahead=row["look_ahead"],
             is_round_trip=bool(row["is_round_trip"]),
             max_price=float(max_price_raw) if max_price_raw is not None else None,
+            must_buy_price=float(must_buy_price_raw) if must_buy_price_raw is not None else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             active=bool(row["active"]),
             snoozed_until=snoozed_until_raw,

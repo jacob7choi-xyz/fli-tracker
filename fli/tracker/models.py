@@ -32,6 +32,7 @@ class Route(BaseModel):
     look_ahead: PositiveInt = 45
     is_round_trip: bool = True
     max_price: NonNegativeFloat | None = None
+    must_buy_price: NonNegativeFloat | None = None
     created_at: datetime | None = None
     active: bool = True
     snoozed_until: str | None = None
