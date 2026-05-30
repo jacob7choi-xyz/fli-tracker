@@ -1,5 +1,6 @@
-"""One-time backfill: export all snapshots from the pre-prune DB into the
-immutable archive shard layout used by export_snapshots.py.
+"""One-time backfill: export all snapshots from the pre-prune DB into the immutable archive.
+
+Writes the same shard layout used by export_snapshots.py.
 
 Environment variables:
     FULL_DB_PATH  -- path to the full (pre-prune) tracker.db
@@ -64,7 +65,14 @@ for (date, group), shard_rows in sorted(shards.items()):
     with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["route_id", "scanned_at", "departure_date", "return_date", "price", "currency"],
+            fieldnames=[
+                "route_id",
+                "scanned_at",
+                "departure_date",
+                "return_date",
+                "price",
+                "currency",
+            ],  # noqa: E501
         )
         writer.writeheader()
         writer.writerows(shard_rows)

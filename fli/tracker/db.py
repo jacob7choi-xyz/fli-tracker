@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS price_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snapshots_route_date
     ON price_snapshots(route_id, departure_date);
 
+CREATE INDEX IF NOT EXISTS idx_snapshots_route_scandate
+    ON price_snapshots(route_id, date(scanned_at));
+
 CREATE TABLE IF NOT EXISTS alerts (
     id         INTEGER PRIMARY KEY,
     route_id   INTEGER NOT NULL REFERENCES routes(id),
@@ -110,8 +113,7 @@ class TrackerDB:
             self._conn.execute("ALTER TABLE notification_log ADD COLUMN return_date TEXT")
 
         route_cols = {
-            row["name"]
-            for row in self._conn.execute("PRAGMA table_info(routes)").fetchall()
+            row["name"] for row in self._conn.execute("PRAGMA table_info(routes)").fetchall()
         }
         if "durations" not in route_cols:
             self._conn.execute("ALTER TABLE routes ADD COLUMN durations TEXT DEFAULT '[7]'")
@@ -126,6 +128,14 @@ class TrackerDB:
             self._conn.execute("ALTER TABLE routes ADD COLUMN snoozed_until TEXT")
         if "must_buy_price" not in route_cols:
             self._conn.execute("ALTER TABLE routes ADD COLUMN must_buy_price REAL")
+
+        # Add after departure_date/return_date columns exist in notification_log
+        self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_notification_log_alert_date
+                ON notification_log(alert_id, departure_date, return_date, price)
+            """
+        )
 
         self._conn.commit()
 

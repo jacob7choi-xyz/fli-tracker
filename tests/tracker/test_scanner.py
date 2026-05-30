@@ -343,8 +343,8 @@ class TestSweep:
     @patch("fli.tracker.scanner.scan_route")
     def test_sweep_filters_by_group(self, mock_scan, db: TrackerDB):
         """When group is specified, only matching routes are scanned."""
-        db.add_route(Route(origin="DFW", destination="ORD"))   # domestic
-        db.add_route(Route(origin="DFW", destination="FCO"))   # longhaul
+        db.add_route(Route(origin="DFW", destination="ORD"))  # domestic
+        db.add_route(Route(origin="DFW", destination="FCO"))  # longhaul
 
         mock_scan.return_value = [
             PriceSnapshot(route_id=1, departure_date="2026-07-15", price=100.0, currency="USD")
@@ -358,8 +358,8 @@ class TestSweep:
     @patch("fli.tracker.scanner.scan_route")
     def test_sweep_longhaul_group(self, mock_scan, db: TrackerDB):
         """Longhaul group scans only international routes."""
-        db.add_route(Route(origin="DFW", destination="ORD"))   # domestic
-        db.add_route(Route(origin="DFW", destination="FCO"))   # longhaul
+        db.add_route(Route(origin="DFW", destination="ORD"))  # domestic
+        db.add_route(Route(origin="DFW", destination="FCO"))  # longhaul
 
         mock_scan.return_value = [
             PriceSnapshot(route_id=1, departure_date="2026-07-15", price=500.0, currency="USD")

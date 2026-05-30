@@ -23,17 +23,12 @@ db_path = os.environ["FLI_DB_PATH"]
 archive_dir = Path(os.environ["ARCHIVE_DIR"])
 sweep_group = os.environ["SWEEP_GROUP"]
 sweep_start = os.environ["SWEEP_START"]  # YYYY-MM-DD HH:MM:SS UTC
-sweep_end = os.environ["SWEEP_END"]      # YYYY-MM-DD HH:MM:SS UTC
+sweep_end = os.environ["SWEEP_END"]  # YYYY-MM-DD HH:MM:SS UTC
 
 date_part = sweep_start[:10]
 run_label = sweep_start.replace(" ", "T").replace(":", "-") + "Z"
 
-out_path = (
-    archive_dir
-    / f"date={date_part}"
-    / f"group={sweep_group}"
-    / f"run={run_label}.csv.gz"
-)
+out_path = archive_dir / f"date={date_part}" / f"group={sweep_group}" / f"run={run_label}.csv.gz"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 
 conn = sqlite3.connect(db_path)
@@ -55,7 +50,14 @@ else:
     with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["route_id", "scanned_at", "departure_date", "return_date", "price", "currency"],
+            fieldnames=[
+                "route_id",
+                "scanned_at",
+                "departure_date",
+                "return_date",
+                "price",
+                "currency",
+            ],  # noqa: E501
         )
         writer.writeheader()
         for row in rows:

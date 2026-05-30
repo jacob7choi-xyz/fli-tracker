@@ -9,9 +9,6 @@ Run against the live tracker.db:
     FLI_DB_PATH=data/tracker.db uv run python scripts/set_must_buy_prices.py
 """
 
-import os
-from pathlib import Path
-
 from fli.tracker.db import TrackerDB
 
 # (origin, destination) -> must_buy_price in USD

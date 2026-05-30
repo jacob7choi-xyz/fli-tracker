@@ -16,9 +16,14 @@ logger = logging.getLogger(__name__)
 
 # Countries considered "domestic" or near-international
 _DOMESTIC_COUNTRIES = {
-    "US", "Puerto Rico",
-    "Mexico", "Jamaica", "Dominican Republic",
-    "Costa Rica", "Guatemala", "El Salvador",
+    "US",
+    "Puerto Rico",
+    "Mexico",
+    "Jamaica",
+    "Dominican Republic",
+    "Costa Rica",
+    "Guatemala",
+    "El Salvador",
     "Canada",
 }
 
@@ -46,14 +51,21 @@ RouteGroup = Literal["domestic", "coastal", "longhaul"]
 
 # Major US east/west coast metros carved out into their own sweep group
 # so the domestic workflow doesn't become a junk drawer as routes grow.
-_COASTAL_AIRPORTS: frozenset[str] = frozenset({
-    # NYC metro
-    "JFK", "LGA", "EWR",
-    # LA metro
-    "LAX", "BUR", "SNA",
-    # Other US coastal cities
-    "BOS", "SEA",
-})
+_COASTAL_AIRPORTS: frozenset[str] = frozenset(
+    {
+        # NYC metro
+        "JFK",
+        "LGA",
+        "EWR",
+        # LA metro
+        "LAX",
+        "BUR",
+        "SNA",
+        # Other US coastal cities
+        "BOS",
+        "SEA",
+    }
+)
 
 
 def route_group(origin: str, destination: str) -> RouteGroup:

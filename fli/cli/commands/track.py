@@ -50,7 +50,8 @@ def track_add(
     durations: Annotated[
         str,
         typer.Option(
-            "--durations", "-d",
+            "--durations",
+            "-d",
             help="Trip durations in days, comma-separated (e.g. 5,7,10)",
         ),
     ] = "7",
@@ -234,8 +235,7 @@ def track_snooze(
             raise typer.Exit(1)
         db.snooze_route(route_id, until)
         typer.echo(
-            f"Snoozed route {route_id} ({route.origin} -> {route.destination})"
-            f" until {until}"
+            f"Snoozed route {route_id} ({route.origin} -> {route.destination}) until {until}"
         )
     finally:
         db.close()

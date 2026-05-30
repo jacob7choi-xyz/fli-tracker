@@ -25,8 +25,8 @@ print(f"DB size before maintenance: {_size_mb(db_path):.2f} MB")
 # Prune on one connection, then close before VACUUM.
 conn = sqlite3.connect(db_path)
 conn.execute(
-    f"DELETE FROM price_snapshots"
-    f" WHERE date(scanned_at) < date('now', 'localtime', '-{retention_days} days')"
+    "DELETE FROM price_snapshots WHERE date(scanned_at) < date('now', 'localtime', ?)",
+    (f"-{retention_days} days",),
 )
 deleted = conn.total_changes
 conn.commit()

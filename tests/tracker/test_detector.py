@@ -340,15 +340,15 @@ class TestMinImprovement:
     @pytest.mark.parametrize(
         "last_notified, expected",
         [
-            (55.0, 20.0),    # $55-$199 band: max($20, 10%) = $20 (10% = $5.5)
-            (100.0, 20.0),   # max($20, 10%) = $20 (10% = $10)
-            (180.0, 20.0),   # max($20, 10%) = $20 (10% = $18)
-            (200.0, 30.0),   # $200-$599 band: max($30, 8%) = $30 (8% = $16)
-            (400.0, 32.0),   # max($30, 8%) = $32 (8% of $400)
-            (450.0, 36.0),   # max($30, 8%) = $36 (8% of $450)
+            (55.0, 20.0),  # $55-$199 band: max($20, 10%) = $20 (10% = $5.5)
+            (100.0, 20.0),  # max($20, 10%) = $20 (10% = $10)
+            (180.0, 20.0),  # max($20, 10%) = $20 (10% = $18)
+            (200.0, 30.0),  # $200-$599 band: max($30, 8%) = $30 (8% = $16)
+            (400.0, 32.0),  # max($30, 8%) = $32 (8% of $400)
+            (450.0, 36.0),  # max($30, 8%) = $36 (8% of $450)
             (599.0, 47.92),  # max($30, 8%) = $47.92 (8% of $599)
-            (600.0, 50.0),   # $600+ band: max($50, 6%) = $50 (6% = $36)
-            (900.0, 54.0),   # max($50, 6%) = $54 (6% of $900)
+            (600.0, 50.0),  # $600+ band: max($50, 6%) = $50 (6% = $36)
+            (900.0, 54.0),  # max($50, 6%) = $54 (6% of $900)
             (1000.0, 60.0),  # max($50, 6%) = $60 (6% of $1000)
         ],
     )
@@ -371,12 +371,16 @@ class TestReAlertSuppression:
     def test_drop_high_price_small_improvement_suppressed(self, db: TrackerDB):
         """$55+ DROP alert: small improvement (< $60) suppressed after first notification."""
         route = db.add_route(Route(origin="DFW", destination="FCO"))
-        alert = db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url"))
+        alert = db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
 
         # Seed history and simulate a prior notification at $450
         db.add_snapshots([_snap(route.id, 500.0)])
         db.log_notification(
-            NotificationRecord(alert_id=alert.id, departure_date="2026-07-15", price=450.0, message="test")
+            NotificationRecord(
+                alert_id=alert.id, departure_date="2026-07-15", price=450.0, message="test"
+            )
         )
         db.add_snapshots([_snap(route.id, 450.0)])
 
@@ -388,11 +392,15 @@ class TestReAlertSuppression:
     def test_drop_high_price_big_improvement_re_alerts(self, db: TrackerDB):
         """$55+ DROP alert: large improvement ($60+) re-alerts after first notification."""
         route = db.add_route(Route(origin="DFW", destination="FCO"))
-        alert = db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url"))
+        alert = db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
 
         db.add_snapshots([_snap(route.id, 500.0)])
         db.log_notification(
-            NotificationRecord(alert_id=alert.id, departure_date="2026-07-15", price=450.0, message="test")
+            NotificationRecord(
+                alert_id=alert.id, departure_date="2026-07-15", price=450.0, message="test"
+            )
         )
         db.add_snapshots([_snap(route.id, 450.0)])
 
@@ -404,11 +412,15 @@ class TestReAlertSuppression:
     def test_drop_low_price_re_alerts_on_any_drop(self, db: TrackerDB):
         """Sub-$55 DROP alert: re-alerts even on a $1 improvement."""
         route = db.add_route(Route(origin="DFW", destination="MCO"))
-        alert = db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url"))
+        alert = db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
+        )
 
         db.add_snapshots([_snap(route.id, 52.0)])
         db.log_notification(
-            NotificationRecord(alert_id=alert.id, departure_date="2026-07-15", price=49.0, message="test")
+            NotificationRecord(
+                alert_id=alert.id, departure_date="2026-07-15", price=49.0, message="test"
+            )
         )
         db.add_snapshots([_snap(route.id, 49.0)])
 
@@ -430,7 +442,14 @@ class TestReAlertSuppression:
     def test_threshold_first_notification_always_fires(self, db: TrackerDB):
         """First threshold notification (no prior record) always fires."""
         route = db.add_route(Route(origin="DFW", destination="FCO"))
-        db.add_alert(Alert(route_id=route.id, alert_type=AlertType.THRESHOLD, threshold=500.0, notify_url="test://url"))
+        db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.THRESHOLD,
+                threshold=500.0,
+                notify_url="test://url",
+            )
+        )
 
         triggers = check_alerts(db, route, [_snap(route.id, 450.0)])
 

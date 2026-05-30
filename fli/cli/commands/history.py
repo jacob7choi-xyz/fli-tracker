@@ -32,9 +32,7 @@ def history(
             typer.echo(f"Route {route_id} not found")
             raise typer.Exit(1)
 
-        snapshots = db.get_snapshots(
-            route_id, departure_date=departure_date, limit=limit
-        )
+        snapshots = db.get_snapshots(route_id, departure_date=departure_date, limit=limit)
     finally:
         db.close()
 

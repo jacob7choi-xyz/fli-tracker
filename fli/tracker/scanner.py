@@ -112,8 +112,14 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
     # For one-way routes, duration doesn't matter -- search once
     if not route.is_round_trip:
         return _search_duration(
-            route, route.durations[0], origin, destination,
-            seat_type, stops, start_date, end_date,
+            route,
+            route.durations[0],
+            origin,
+            destination,
+            seat_type,
+            stops,
+            start_date,
+            end_date,
         )
 
     # Search each duration and dedup by (departure_date, return_date, price)
@@ -122,8 +128,14 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
 
     for duration in route.durations:
         snapshots = _search_duration(
-            route, duration, origin, destination,
-            seat_type, stops, start_date, end_date,
+            route,
+            duration,
+            origin,
+            destination,
+            seat_type,
+            stops,
+            start_date,
+            end_date,
         )
         for snap in snapshots:
             key = (snap.departure_date, snap.return_date, snap.price)
@@ -155,10 +167,7 @@ def sweep(db: TrackerDB, group: RouteGroup | None = None) -> int:
     """
     routes = db.list_routes(active_only=True)
     if group is not None:
-        routes = [
-            r for r in routes
-            if route_group(r.origin, r.destination) == group
-        ]
+        routes = [r for r in routes if route_group(r.origin, r.destination) == group]
     if not routes:
         logger.info("No active routes to scan")
         return 0

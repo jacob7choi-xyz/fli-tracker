@@ -55,10 +55,7 @@ def watch(
                 typer.echo(f"Route {route_id} not found")
                 raise typer.Exit(1)
             if not route.active:
-                typer.echo(
-                    f"Route {route_id} is paused."
-                    f" Use 'fli track resume {route_id}' first."
-                )
+                typer.echo(f"Route {route_id} is paused. Use 'fli track resume {route_id}' first.")
                 raise typer.Exit(1)
 
             typer.echo(f"Scanning route {route.id}: {route.origin} -> {route.destination}")
@@ -82,15 +79,11 @@ def watch(
         else:
             routes = db.list_routes(active_only=True)
             if group_filter is not None:
-                routes = [
-                    r for r in routes
-                    if route_group(r.origin, r.destination) == group_filter
-                ]
+                routes = [r for r in routes if route_group(r.origin, r.destination) == group_filter]
             if not routes:
                 label = f" in group '{group_filter}'" if group_filter else ""
                 typer.echo(
-                    f"No active routes to scan{label}."
-                    " Add one with: fli track add <origin> <dest>"
+                    f"No active routes to scan{label}. Add one with: fli track add <origin> <dest>"
                 )
                 raise typer.Exit()
 

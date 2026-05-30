@@ -180,6 +180,7 @@ class TestRoutes:
     def test_snooze_today_is_still_excluded(self, db: TrackerDB):
         """Inclusive semantics: snoozed until today means muted for the whole day."""
         from datetime import date
+
         route = db.add_route(Route(origin="DFW", destination="FCO"))
         db.snooze_route(route.id, date.today().isoformat())
         active = db.list_routes(active_only=True)
@@ -490,9 +491,7 @@ class TestRouteStats:
         assert "departure_date" in notif_cols
         assert "return_date" in notif_cols
         # Verify route columns exist
-        route_cols = {
-            r["name"] for r in db1._conn.execute("PRAGMA table_info(routes)").fetchall()
-        }
+        route_cols = {r["name"] for r in db1._conn.execute("PRAGMA table_info(routes)").fetchall()}
         assert "durations" in route_cols
         assert "max_price" in route_cols
         db1.close()

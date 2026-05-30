@@ -148,13 +148,13 @@ class TestComputePercentileRank:
     @pytest.mark.parametrize(
         ("price", "expected_range"),
         [
-            (50.0, (0.0, 10.0)),    # below p10
+            (50.0, (0.0, 10.0)),  # below p10
             (100.0, (10.0, 10.0)),  # at p10
             (150.0, (10.0, 25.0)),  # between p10 and p25
             (200.0, (25.0, 25.0)),  # at p25
             (400.0, (50.0, 50.0)),  # at p50 (median)
             (600.0, (75.0, 75.0)),  # at p75
-            (800.0, (90.0, 100.0)), # above p90
+            (800.0, (90.0, 100.0)),  # above p90
         ],
     )
     def test_rank_in_expected_range(self, price, expected_range):
@@ -265,14 +265,19 @@ class TestScoreDeal:
         )
         # Score with a lead-time discount (31-60 days out, price well below bucket avg)
         from datetime import date, timedelta
+
         dep_date = (date.today() + timedelta(days=45)).isoformat()
         result_with_lt = _score_deal(400.0, stats, dep_date)
-        result_no_lt = _score_deal(400.0, _make_stats(
-            overall_median=600.0,
-            all_time_min=400.0,
-            price_mean=600.0,
-            price_stddev=90.0,
-        ), dep_date)
+        result_no_lt = _score_deal(
+            400.0,
+            _make_stats(
+                overall_median=600.0,
+                all_time_min=400.0,
+                price_mean=600.0,
+                price_stddev=90.0,
+            ),
+            dep_date,
+        )
         labels = ["Skip", "Meh", "Worth watching", "Strong buy", "BUY NOW"]
         assert labels.index(result_with_lt) >= labels.index(result_no_lt)
 
@@ -525,13 +530,21 @@ class TestFormatMessage:
         "fli.tracker.notifier.fetch_flight_details",
         return_value=[
             LegDetail(
-                label="Outbound", airlines="AA", duration="10h 25m",
-                stops="Nonstop", dep_time="06:40 PM", arr_time="12:05 PM",
+                label="Outbound",
+                airlines="AA",
+                duration="10h 25m",
+                stops="Nonstop",
+                dep_time="06:40 PM",
+                arr_time="12:05 PM",
                 perks="Free carry-on, Paid checked bag",
             ),
             LegDetail(
-                label="Return", airlines="AA", duration="11h 10m",
-                stops="Nonstop", dep_time="01:30 PM", arr_time="06:40 PM",
+                label="Return",
+                airlines="AA",
+                duration="11h 10m",
+                stops="Nonstop",
+                dep_time="01:30 PM",
+                arr_time="06:40 PM",
                 perks="Free carry-on, Paid checked bag",
             ),
         ],
@@ -727,9 +740,7 @@ class TestBuildTitle:
         assert "DFW -> FCO" in title
 
     def test_threshold_title_with_stats(self):
-        trigger = _make_trigger(
-            alert_type=AlertType.THRESHOLD, price=480.0, threshold=500.0
-        )
+        trigger = _make_trigger(alert_type=AlertType.THRESHOLD, price=480.0, threshold=500.0)
         stats = _make_stats()
         title = _build_title(trigger, _stats=stats)
         assert "Price Alert" in title
@@ -804,9 +815,7 @@ class TestFormatDigest:
                 notify_url="test://url",
             )
         )
-        drop = _make_trigger(
-            alert_type=AlertType.DROP, price=500.0, route_id=route.id
-        )
+        drop = _make_trigger(alert_type=AlertType.DROP, price=500.0, route_id=route.id)
         threshold = _make_trigger(
             alert_type=AlertType.THRESHOLD,
             price=400.0,
@@ -843,10 +852,16 @@ class TestFormatDigest:
             Alert(route_id=intl_route.id, alert_type=AlertType.DROP, notify_url="test://url")
         )
         dom_trigger = _make_trigger(
-            price=100.0, route_id=dom_route.id, origin="DFW", destination="ORD",
+            price=100.0,
+            route_id=dom_route.id,
+            origin="DFW",
+            destination="ORD",
         )
         intl_trigger = _make_trigger(
-            price=500.0, route_id=intl_route.id, origin="DFW", destination="FCO",
+            price=500.0,
+            route_id=intl_route.id,
+            origin="DFW",
+            destination="FCO",
         )
         body = format_digest([dom_trigger, intl_trigger], db)
         assert "Domestic Deals" in body
@@ -857,11 +872,12 @@ class TestFormatDigest:
     def test_only_domestic_no_international_header(self, db: TrackerDB):
         """When all triggers are domestic, no International header appears."""
         route = db.add_route(Route(origin="DFW", destination="ORD"))
-        db.add_alert(
-            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
-        )
+        db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url"))
         trigger = _make_trigger(
-            price=100.0, route_id=route.id, origin="DFW", destination="ORD",
+            price=100.0,
+            route_id=route.id,
+            origin="DFW",
+            destination="ORD",
         )
         body = format_digest([trigger], db)
         assert "Domestic Deals" in body
@@ -870,9 +886,7 @@ class TestFormatDigest:
     def test_only_international_no_domestic_header(self, db: TrackerDB):
         """When all triggers are international, no Domestic header appears."""
         route = db.add_route(Route(origin="DFW", destination="FCO"))
-        db.add_alert(
-            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url")
-        )
+        db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="test://url"))
         trigger = _make_trigger(route_id=route.id)
         body = format_digest([trigger], db)
         assert "International Deals" in body
@@ -899,7 +913,9 @@ class TestSendDigest:
         )
         t1 = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
         t2 = _make_trigger(
-            price=400.0, alert_id=alert.id, route_id=route.id,
+            price=400.0,
+            alert_id=alert.id,
+            route_id=route.id,
             departure_date="2026-07-20",
         )
 
@@ -926,7 +942,9 @@ class TestSendDigest:
         )
         t1 = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
         t2 = _make_trigger(
-            price=400.0, alert_id=alert.id, route_id=route.id,
+            price=400.0,
+            alert_id=alert.id,
+            route_id=route.id,
             departure_date="2026-07-20",
         )
 
@@ -961,11 +979,17 @@ class TestSendDigest:
             )
         )
         cheap = _make_trigger(
-            price=850.0, alert_id=alert.id, route_id=route.id, max_price=900.0,
+            price=850.0,
+            alert_id=alert.id,
+            route_id=route.id,
+            max_price=900.0,
         )
         expensive = _make_trigger(
-            price=1100.0, alert_id=alert.id, route_id=route.id,
-            departure_date="2026-08-01", max_price=900.0,
+            price=1100.0,
+            alert_id=alert.id,
+            route_id=route.id,
+            departure_date="2026-08-01",
+            max_price=900.0,
         )
 
         mock_ap = MagicMock()
@@ -1071,12 +1095,41 @@ class TestAirportLocations:
         from fli.tracker.notifier import _AIRPORT_LOCATIONS
 
         tracked_codes = [
-            "DFW", "ATL", "ORD", "LAX", "SFO", "SEA", "MIA", "BOS", "JFK",
-            "DEN", "MSP", "PHX", "HNL", "ANC", "PWM",
-            "CUN", "SJO",
-            "LHR", "CDG", "FCO", "BCN", "LIS", "AMS", "DUB", "ATH", "IST",
-            "NRT", "ICN", "BKK",
-            "SYD", "AKL", "GRU", "EZE", "BOG", "SCL",
+            "DFW",
+            "ATL",
+            "ORD",
+            "LAX",
+            "SFO",
+            "SEA",
+            "MIA",
+            "BOS",
+            "JFK",
+            "DEN",
+            "MSP",
+            "PHX",
+            "HNL",
+            "ANC",
+            "PWM",
+            "CUN",
+            "SJO",
+            "LHR",
+            "CDG",
+            "FCO",
+            "BCN",
+            "LIS",
+            "AMS",
+            "DUB",
+            "ATH",
+            "IST",
+            "NRT",
+            "ICN",
+            "BKK",
+            "SYD",
+            "AKL",
+            "GRU",
+            "EZE",
+            "BOG",
+            "SCL",
         ]
         missing = [c for c in tracked_codes if c not in _AIRPORT_LOCATIONS]
         assert missing == [], f"Missing airport metadata for: {missing}"

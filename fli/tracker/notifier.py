@@ -73,7 +73,7 @@ def _compute_percentile_rank(price: float, percentiles: dict[int, float]) -> flo
 
     pct_hi, val_hi = breakpoints[-1]
     if price >= val_hi:
-        return min(100.0, pct_hi + (price - val_hi) / max(val_hi, 1.0) * 10.0)
+        return 100.0
 
     for i in range(len(breakpoints) - 1):
         pct_lo, val_lo = breakpoints[i]
@@ -85,6 +85,7 @@ def _compute_percentile_rank(price: float, percentiles: dict[int, float]) -> flo
             return pct_lo + frac * (pct_hi - pct_lo)
 
     return 50.0
+
 
 def _load_airport_locations() -> dict[str, str]:
     """Load airport city/location labels from the bundled CSV package data.
@@ -185,6 +186,7 @@ def _score_deal(price: float, stats: RouteStats | None, departure_date: str | No
     if departure_date and stats.lead_time_buckets:
         try:
             from datetime import date as _date
+
             dep = _date.fromisoformat(departure_date)
             lead_days = (dep - _date.today()).days
             bucket = _lead_time_bucket(lead_days)
@@ -283,6 +285,7 @@ def _build_trend_line(
     if departure_date and stats.lead_time_buckets:
         try:
             from datetime import date as _date
+
             dep = _date.fromisoformat(departure_date)
             lead_days = (dep - _date.today()).days
             bucket = _lead_time_bucket(lead_days)
@@ -525,16 +528,16 @@ def _render_legs_html(legs: list[LegDetail]) -> str:
     parts = []
     for leg in legs:
         perks_html = (
-            f'<div style="font-size:12px;color:#888;margin-top:2px;">'
-            f'{leg.perks}</div>'
-            if leg.perks else ""
+            f'<div style="font-size:12px;color:#888;margin-top:2px;">{html.escape(leg.perks)}</div>'
+            if leg.perks
+            else ""
         )
         parts.append(
             f'<div style="margin-top:6px;font-size:13px;">'
-            f'<strong>{leg.label}:</strong> {leg.airlines}<br>'
-            f'{leg.duration} ({leg.stops}) &middot; '
-            f'{leg.dep_time} - {leg.arr_time}'
-            f'{perks_html}</div>'
+            f"<strong>{html.escape(leg.label)}:</strong> {html.escape(leg.airlines)}<br>"
+            f"{html.escape(leg.duration)} ({html.escape(leg.stops)}) &middot; "
+            f"{html.escape(leg.dep_time)} - {html.escape(leg.arr_time)}"
+            f"{perks_html}</div>"
         )
     return "".join(parts)
 
@@ -577,8 +580,7 @@ def format_message(
             drop_pct = (1 - snap.price / trigger.previous_low) * 100
             rt_label = " RT" if snap.return_date else ""
             lines.append(
-                f"Previous low: ${trigger.previous_low:.0f}{rt_label}"
-                f" (down {drop_pct:.1f}%)"
+                f"Previous low: ${trigger.previous_low:.0f}{rt_label} (down {drop_pct:.1f}%)"
             )
         else:
             rt_label = " RT" if snap.return_date else ""
@@ -694,18 +696,16 @@ def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
 
 
 def _render_trigger_block(
-    trigger: AlertTrigger, index: int, db: TrackerDB,
+    trigger: AlertTrigger,
+    index: int,
+    stats: RouteStats | None,
 ) -> str:
     """Render a single trigger as an HTML card block for the digest."""
     route = trigger.route
     snap = trigger.snapshot
-    stats = db.get_route_stats(route.id)
 
     # Must-buy check: bypass scorer if price is below the must_buy threshold
-    is_must_buy = (
-        route.must_buy_price is not None
-        and snap.price <= route.must_buy_price
-    )
+    is_must_buy = route.must_buy_price is not None and snap.price <= route.must_buy_price
     if is_must_buy:
         deal = "MUST BUY"
         trend = None
@@ -714,7 +714,8 @@ def _render_trigger_block(
         trend = _build_trend_line(snap.price, stats, snap.departure_date)
     trend_html = (
         f'<div style="font-size:12px;color:#888;margin:2px 0;">{html.escape(trend)}</div>'
-        if trend else ""
+        if trend
+        else ""
     )
 
     # Price
@@ -732,15 +733,10 @@ def _render_trigger_block(
     if trigger.alert.alert_type == AlertType.DROP and trigger.previous_low is not None:
         if trigger.previous_low > 0:
             drop_pct = (1 - snap.price / trigger.previous_low) * 100
-            alert_label = (
-                f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
-            )
+            alert_label = f"New low (was ${trigger.previous_low:.0f}, down {drop_pct:.1f}%)"
         else:
             alert_label = f"New low (was ${trigger.previous_low:.0f})"
-    elif (
-        trigger.alert.alert_type == AlertType.THRESHOLD
-        and trigger.alert.threshold is not None
-    ):
+    elif trigger.alert.alert_type == AlertType.THRESHOLD and trigger.alert.threshold is not None:
         alert_label = f"Below ${trigger.alert.threshold:.0f} threshold"
     else:
         alert_label = "Alert triggered"
@@ -750,9 +746,9 @@ def _render_trigger_block(
         route.origin, route.destination, snap.departure_date, snap.return_date
     )
 
-    # Route label with city names
-    orig_city = _AIRPORT_LOCATIONS.get(route.origin, route.origin)
-    dest_city_label = _AIRPORT_LOCATIONS.get(route.destination, route.destination)
+    # Route label with city names (escaped for HTML)
+    orig_city = html.escape(_AIRPORT_LOCATIONS.get(route.origin, route.origin))
+    dest_city_label = html.escape(_AIRPORT_LOCATIONS.get(route.destination, route.destination))
 
     # Fetch real flight details (airline, duration, stops)
     legs = fetch_flight_details(trigger)
@@ -763,28 +759,29 @@ def _render_trigger_block(
     must_buy_banner = (
         '<div style="font-size:11px;font-weight:bold;color:#d93025;'
         'letter-spacing:0.05em;margin-bottom:4px;">MUST BUY -- below steal threshold</div>'
-        if is_must_buy else ""
+        if is_must_buy
+        else ""
     )
 
     return (
         f'<div style="margin-bottom:20px;padding:12px;'
         f'border-left:3px solid {border_color};background:{bg_color};">'
-        f'{must_buy_banner}'
+        f"{must_buy_banner}"
         f'<div style="font-size:16px;font-weight:bold;">'
-        f'{index}. {route.origin} -> {route.destination}</div>'
+        f"{index}. {route.origin} -> {route.destination}</div>"
         f'<div style="font-size:13px;color:#666;">'
-        f'{orig_city} -> {dest_city_label}</div>'
+        f"{orig_city} -> {dest_city_label}</div>"
         f'<div style="font-size:20px;font-weight:bold;margin:8px 0;">'
-        f'{price_str} &middot; {deal}</div>'
-        f'{trend_html}'
+        f"{price_str} &middot; {deal}</div>"
+        f"{trend_html}"
         f'<div style="font-size:14px;">{date_str}</div>'
         f'<div style="font-size:13px;color:#666;margin:4px 0;">'
-        f'{alert_label}</div>'
-        f'{flight_html}'
+        f"{html.escape(alert_label)}</div>"
+        f"{flight_html}"
         f'<div style="margin-top:8px;">'
         f'<a href="{search_url}" style="color:#1a73e8;">'
-        f'Book on Google Flights</a></div>'
-        f'</div>'
+        f"Book on Google Flights</a></div>"
+        f"</div>"
     )
 
 
@@ -803,6 +800,7 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         Formatted HTML digest string.
 
     """
+
     # Sort: drops first, then by price ascending
     def sort_key(t: AlertTrigger) -> tuple:
         type_order = 0 if t.alert.alert_type == AlertType.DROP else 1
@@ -810,10 +808,17 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
 
     sorted_triggers = sorted(triggers, key=sort_key)
 
+    # Pre-fetch stats for all unique routes -- avoids N+1 (one get_route_stats per trigger card)
+    stats_cache: dict[int, RouteStats | None] = {
+        rid: db.get_route_stats(rid) for rid in {t.route.id for t in sorted_triggers}
+    }
+
     # One-line summary: count + best deal
     best = sorted_triggers[0] if sorted_triggers else None
     if best:
-        dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
+        dest_city = html.escape(
+            _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
+        )
         best_price = f"${best.snapshot.price:.0f}"
         count = len(triggers)
         plural = "s" if count != 1 else ""
@@ -823,12 +828,10 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
 
     # Split into domestic and international
     domestic = [
-        t for t in sorted_triggers
-        if _is_domestic_route(t.route.origin, t.route.destination)
+        t for t in sorted_triggers if _is_domestic_route(t.route.origin, t.route.destination)
     ]
     international = [
-        t for t in sorted_triggers
-        if not _is_domestic_route(t.route.origin, t.route.destination)
+        t for t in sorted_triggers if not _is_domestic_route(t.route.origin, t.route.destination)
     ]
 
     # Render sections with continuous numbering
@@ -838,28 +841,30 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
     if domestic:
         blocks = []
         for trigger in domestic:
-            blocks.append(_render_trigger_block(trigger, counter, db))
+            blocks.append(
+                _render_trigger_block(trigger, counter, stats_cache.get(trigger.route.id))
+            )
             counter += 1
         sections.append(
-            f'<h3 style="margin:16px 0 8px;color:#333;">Domestic Deals</h3>'
-            f'{"".join(blocks)}'
+            f'<h3 style="margin:16px 0 8px;color:#333;">Domestic Deals</h3>{"".join(blocks)}'
         )
 
     if international:
         blocks = []
         for trigger in international:
-            blocks.append(_render_trigger_block(trigger, counter, db))
+            blocks.append(
+                _render_trigger_block(trigger, counter, stats_cache.get(trigger.route.id))
+            )
             counter += 1
         sections.append(
-            f'<h3 style="margin:16px 0 8px;color:#333;">International Deals</h3>'
-            f'{"".join(blocks)}'
+            f'<h3 style="margin:16px 0 8px;color:#333;">International Deals</h3>{"".join(blocks)}'
         )
 
     body = (
         f'<div style="font-family:sans-serif;max-width:600px;margin:0 auto;">'
-        f'<h2 style="margin-bottom:16px;">{summary}</h2>'
-        f'{"".join(sections)}'
-        f'</div>'
+        f'<h2 style="margin-bottom:16px;">{html.escape(summary)}</h2>'
+        f"{''.join(sections)}"
+        f"</div>"
     )
     return body
 
@@ -885,13 +890,19 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     filtered = []
     for t in triggers:
         is_must_buy = (
-            t.route.must_buy_price is not None
-            and t.snapshot.price <= t.route.must_buy_price
+            t.route.must_buy_price is not None and t.snapshot.price <= t.route.must_buy_price
         )
-        if not is_must_buy and t.route.max_price is not None and t.snapshot.price > t.route.max_price:
+        if (
+            not is_must_buy
+            and t.route.max_price is not None
+            and t.snapshot.price > t.route.max_price
+        ):  # noqa: E501
             logger.info(
                 "Skipping %s -> %s ($%.0f > $%.0f max) for digest",
-                t.route.origin, t.route.destination, t.snapshot.price, t.route.max_price,
+                t.route.origin,
+                t.route.destination,
+                t.snapshot.price,
+                t.route.max_price,
             )
             continue
         filtered.append(t)
