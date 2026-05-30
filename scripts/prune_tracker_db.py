@@ -2,7 +2,7 @@
 
 Reads configuration from environment variables:
     FLI_DB_PATH          -- path to tracker.db (required)
-    FLI_RETENTION_DAYS   -- days of snapshots to keep (default: 60)
+    FLI_RETENTION_DAYS   -- days of snapshots to keep (default: 14)
     FLI_VACUUM_THRESHOLD -- freelist/page ratio above which VACUUM runs (default: 0.20)
 """
 
@@ -12,7 +12,7 @@ import os
 import sqlite3
 
 db_path = os.environ["FLI_DB_PATH"]
-retention_days = int(os.environ.get("FLI_RETENTION_DAYS", "21"))
+retention_days = int(os.environ.get("FLI_RETENTION_DAYS", "14"))
 vacuum_threshold = float(os.environ.get("FLI_VACUUM_THRESHOLD", "0.20"))
 
 
