@@ -699,6 +699,7 @@ def _render_trigger_block(
     trigger: AlertTrigger,
     index: int,
     stats: RouteStats | None,
+    fetch_details: bool = False,
 ) -> str:
     """Render a single trigger as an HTML card block for the digest."""
     route = trigger.route
@@ -750,8 +751,9 @@ def _render_trigger_block(
     orig_city = html.escape(_AIRPORT_LOCATIONS.get(route.origin, route.origin))
     dest_city_label = html.escape(_AIRPORT_LOCATIONS.get(route.destination, route.destination))
 
-    # Fetch real flight details (airline, duration, stops)
-    legs = fetch_flight_details(trigger)
+    # Fetch real flight details (airline, duration, stops) -- only for top alerts
+    # to avoid making dozens of live API calls per digest sweep
+    legs = fetch_flight_details(trigger) if fetch_details else []
     flight_html = _render_legs_html(legs) if legs else ""
 
     border_color = "#d93025" if is_must_buy else "#4a90d9"
@@ -834,16 +836,25 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         t for t in sorted_triggers if not _is_domestic_route(t.route.origin, t.route.destination)
     ]
 
-    # Render sections with continuous numbering
+    # Render sections with continuous numbering.
+    # Live flight detail fetches (airline/duration/stops) are capped at 5 per digest
+    # to prevent the sweep from timing out when many alerts fire simultaneously.
     sections = []
     counter = 1
+    detail_budget = 5
 
     if domestic:
         blocks = []
         for trigger in domestic:
             blocks.append(
-                _render_trigger_block(trigger, counter, stats_cache.get(trigger.route.id))
+                _render_trigger_block(
+                    trigger,
+                    counter,
+                    stats_cache.get(trigger.route.id),
+                    fetch_details=detail_budget > 0,
+                )
             )
+            detail_budget = max(0, detail_budget - 1)
             counter += 1
         sections.append(
             f'<h3 style="margin:16px 0 8px;color:#333;">Domestic Deals</h3>{"".join(blocks)}'
@@ -853,8 +864,14 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
         blocks = []
         for trigger in international:
             blocks.append(
-                _render_trigger_block(trigger, counter, stats_cache.get(trigger.route.id))
+                _render_trigger_block(
+                    trigger,
+                    counter,
+                    stats_cache.get(trigger.route.id),
+                    fetch_details=detail_budget > 0,
+                )
             )
+            detail_budget = max(0, detail_budget - 1)
             counter += 1
         sections.append(
             f'<h3 style="margin:16px 0 8px;color:#333;">International Deals</h3>{"".join(blocks)}'
