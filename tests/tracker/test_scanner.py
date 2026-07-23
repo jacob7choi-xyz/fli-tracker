@@ -15,7 +15,7 @@ import pytest
 from fli.search.dates import DatePrice
 from fli.tracker.db import TrackerDB
 from fli.tracker.models import PriceSnapshot, Route
-from fli.tracker.scanner import scan_route, sweep
+from fli.tracker.scanner import ScanStats, route_units, scan_route, sweep
 
 
 @pytest.fixture()
@@ -129,6 +129,98 @@ class TestScanRoute:
         snapshots = scan_route(route)
 
         assert snapshots == []
+
+
+class TestScanStats:
+    """Collection-completeness accounting.
+
+    Unit semantics: a unit is completed when its search RETURNED, including
+    a legitimate zero-fare result; a search failure is not completed.
+    Attempted != completed; produced-results != completed.
+    """
+
+    @pytest.mark.parametrize(
+        ("route_kwargs", "expected"),
+        [
+            ({"is_round_trip": True, "durations": [5, 7, 10]}, 3),
+            ({"is_round_trip": True, "durations": [7]}, 1),
+            ({"is_round_trip": False, "durations": [7]}, 1),
+            ({"is_round_trip": False, "durations": [5, 7]}, 1),
+        ],
+    )
+    def test_route_units_counts_intent(self, route_kwargs, expected):
+        assert route_units(_make_route(**route_kwargs)) == expected
+
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_all_units_completed_on_success(self, mock_search_cls):
+        mock_instance = MagicMock()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.return_value = _make_date_prices(2, round_trip=True)
+
+        stats = ScanStats(expected_units=3)
+        scan_route(_make_route(durations=[5, 7, 10]), stats=stats)
+
+        assert stats.completed_units == 3
+        assert stats.complete is True
+
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_zero_fare_search_counts_as_completed(self, mock_search_cls):
+        """A search that returns no fares IS a completed observation."""
+        mock_instance = MagicMock()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.return_value = None  # API returned, zero fares
+
+        stats = ScanStats(expected_units=1)
+        snapshots = scan_route(_make_route(durations=[7]), stats=stats)
+
+        assert snapshots == []
+        assert stats.completed_units == 1
+        assert stats.complete is True
+
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_failed_search_is_not_completed(self, mock_search_cls):
+        """Never count a swallowed search failure as completed.
+
+        This is exactly how exit 0 stopped implying completeness
+        (2026-07 incident).
+        """
+        mock_instance = MagicMock()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.side_effect = Exception("API error")
+
+        stats = ScanStats(expected_units=1)
+        snapshots = scan_route(_make_route(durations=[7]), stats=stats)
+
+        assert snapshots == []
+        assert stats.completed_units == 0
+        assert stats.complete is False
+
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_partial_failure_across_durations(self, mock_search_cls):
+        mock_instance = MagicMock()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.side_effect = [
+            _make_date_prices(2, round_trip=True),
+            Exception("API error"),
+            _make_date_prices(1, round_trip=True),
+        ]
+
+        stats = ScanStats(expected_units=3)
+        scan_route(_make_route(durations=[5, 7, 10]), stats=stats)
+
+        assert stats.completed_units == 2
+        assert stats.complete is False
+
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_one_way_failure_not_completed(self, mock_search_cls):
+        mock_instance = MagicMock()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.side_effect = Exception("API error")
+
+        stats = ScanStats(expected_units=1)
+        scan_route(_make_route(is_round_trip=False), stats=stats)
+
+        assert stats.completed_units == 0
 
     @patch("fli.tracker.scanner.SearchDates")
     def test_uses_route_cabin_class(self, mock_search_cls):

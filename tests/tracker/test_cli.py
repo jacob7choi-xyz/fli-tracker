@@ -351,6 +351,50 @@ class TestWatch:
         row = tmp_db._conn.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()
         assert row[0] == 1
 
+    @patch("fli.cli.commands.watch.check_alerts", return_value=[])
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_sweep_result_file_reports_explicit_counts(
+        self, mock_search_cls, mock_check, runner, tmp_db, tmp_path, monkeypatch
+    ):
+        """The result file, not the exit code, is the completeness source.
+
+        One route's search fails (swallowed by the scanner, exit stays 0);
+        expected_units != completed_units must record that.
+        """
+        import json
+        from unittest.mock import MagicMock as MM
+
+        tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        tmp_db.add_route(Route(origin="DFW", destination="ORD"))
+
+        mock_instance = MM()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.side_effect = [Exception("API error"), None]
+
+        result_path = tmp_path / "sweep_result.json"
+        monkeypatch.setenv("FLI_SWEEP_RESULT", str(result_path))
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 0  # scanner swallows the failure by design
+        payload = json.loads(result_path.read_text())
+        assert payload["expected_units"] == 2
+        assert payload["completed_units"] == 1
+        assert payload["notify_failed"] is False
+
+    @patch("fli.cli.commands.watch.check_alerts", return_value=[])
+    @patch("fli.cli.commands.watch.scan_route", return_value=[])
+    def test_no_result_file_without_env(
+        self, mock_scan, mock_check, runner, tmp_db, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("FLI_SWEEP_RESULT", raising=False)
+        tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 0
+        assert not any(p.name == "sweep_result.json" for p in tmp_path.iterdir())
+
 
 # ------------------------------------------------------------------
 # history command

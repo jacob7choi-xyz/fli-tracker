@@ -1,6 +1,8 @@
 """CLI command for running price sweeps."""
 
+import json
 import logging
+import os
 from typing import Annotated
 
 import typer
@@ -9,7 +11,7 @@ from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
 from fli.tracker.notifier import NotificationConfigError, send_digest
 from fli.tracker.regions import RouteGroup, route_group
-from fli.tracker.scanner import scan_route
+from fli.tracker.scanner import ScanStats, route_units, scan_route
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,35 @@ def _send_digest_contained(triggers, db) -> tuple[int, bool]:
     except NotificationConfigError:
         logger.error("Notification skipped: NOTIFY_URL is not configured")
         return 0, True
+
+
+def _write_sweep_result(
+    stats: ScanStats,
+    snapshots: int,
+    alerts_triggered: int,
+    notifications_sent: int,
+    notify_failed: bool,
+) -> None:
+    """Write the explicit collection result to FLI_SWEEP_RESULT, if set.
+
+    This file, not the process exit code, is the source of truth for
+    collection completeness: the scanner swallows per-search failures by
+    design, so exit 0 does not imply every intended unit was collected.
+    Consumers treat a missing file as an incomplete (crashed) sweep.
+    """
+    result_path = os.environ.get("FLI_SWEEP_RESULT")
+    if not result_path:
+        return
+    payload = {
+        "expected_units": stats.expected_units,
+        "completed_units": stats.completed_units,
+        "snapshots": snapshots,
+        "alerts_triggered": alerts_triggered,
+        "notifications_sent": notifications_sent,
+        "notify_failed": notify_failed,
+    }
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def watch(
@@ -75,8 +106,12 @@ def watch(
                 raise typer.Exit(1)
 
             typer.echo(f"Scanning route {route.id}: {route.origin} -> {route.destination}")
-            snapshots = scan_route(route)
+            stats = ScanStats(expected_units=route_units(route))
+            snapshots = scan_route(route, stats=stats)
 
+            sent = 0
+            triggers = []
+            notify_failed = False
             if snapshots:
                 # Check alerts BEFORE inserting so get_min_price
                 # reflects the previous low, not the current scan
@@ -88,13 +123,15 @@ def watch(
                 if triggers:
                     sent, notify_failed = _send_digest_contained(triggers, db)
                     typer.echo(f"Sent digest with {sent}/{len(triggers)} alerts")
-                    if notify_failed:
-                        typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
-                        raise typer.Exit(2)
                 else:
                     typer.echo("No alerts triggered")
             else:
                 typer.echo("No results found")
+
+            _write_sweep_result(stats, len(snapshots), len(triggers), sent, notify_failed)
+            if notify_failed:
+                typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
+                raise typer.Exit(2)
         else:
             routes = db.list_routes(active_only=True)
             if group_filter is not None:
@@ -110,10 +147,14 @@ def watch(
             typer.echo(f"Scanning {len(routes)} active route(s){group_label}...")
             total_snapshots = 0
             all_triggers = []
+            stats = ScanStats()
 
             for route in routes:
                 typer.echo(f"  {route.origin} -> {route.destination}...", nl=False)
-                snapshots = scan_route(route)
+                # Count intent before scanning so units the scanner never
+                # reaches still register as expected-but-not-completed
+                stats.expected_units += route_units(route)
+                snapshots = scan_route(route, stats=stats)
 
                 if snapshots:
                     # Check alerts BEFORE inserting so get_min_price
@@ -141,7 +182,11 @@ def watch(
             typer.echo(
                 f"Sweep complete: {total_snapshots} snapshots, "
                 f"{len(all_triggers)} alerts triggered, "
-                f"{total_sent} notifications sent"
+                f"{total_sent} notifications sent "
+                f"({stats.completed_units}/{stats.expected_units} units collected)"
+            )
+            _write_sweep_result(
+                stats, total_snapshots, len(all_triggers), total_sent, notify_failed
             )
             if notify_failed:
                 typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
