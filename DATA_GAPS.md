@@ -49,10 +49,14 @@ mechanism provides.
   Accepted as low-risk and unobserved by design; closing it would require
   bounce processing (webhook or mailbox monitoring), disproportionate for
   this system.
-- **Concurrency queue saturation**: the shared writer group queues up to
-  the platform cap of 100 pending runs; work beyond the cap is rejected.
-  Bounded by 20-minute job timeouts; reaching the cap requires a
-  multi-day platform stall.
+- **Concurrency queue saturation**: the shared writer group can queue up
+  to the platform cap of 100 pending runs; work beyond the cap may be
+  rejected. The 20-minute job timeouts bound individual executing sweeps
+  but do NOT bound platform queue delay: saturation requires sustained
+  inability to drain the queue relative to the sweep arrival rate
+  (derived: at the current 12 scheduled runs/day, filling the cap implies
+  roughly 8 days of zero drainage) and remains an accepted
+  platform-availability residual.
 - **Parse failure aborts the sweep**: a search response that returns but
   fails parsing stops the sweep loudly (unexpected upstream contract
   drift deserves visibility, not per-unit recovery). Already-collected
