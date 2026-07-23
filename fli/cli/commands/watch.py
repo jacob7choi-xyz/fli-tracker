@@ -1,15 +1,63 @@
 """CLI command for running price sweeps."""
 
+import json
 import logging
+import os
 from typing import Annotated
 
 import typer
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
-from fli.tracker.notifier import send_digest
+from fli.tracker.notifier import NotificationError, send_digest
 from fli.tracker.regions import RouteGroup, route_group
-from fli.tracker.scanner import scan_route
+from fli.tracker.scanner import ScanStats, route_units, scan_route
+
+logger = logging.getLogger(__name__)
+
+
+def _send_digest_contained(triggers, db) -> tuple[int, str | None]:
+    """Send the digest without letting notification failure abort the sweep.
+
+    Collection and persistence happen before this point; NO notification
+    failure (config, dependency, or delivery) may cost collected data --
+    and every one of them must surface identically as a red run. Returns
+    (notifications_sent, failure_reason_or_None).
+    """
+    try:
+        return send_digest(triggers, db), None
+    except NotificationError as exc:
+        logger.error("Notification failed: %s", exc)
+        return 0, str(exc)
+
+
+def _write_sweep_result(
+    stats: ScanStats,
+    snapshots: int,
+    alerts_triggered: int,
+    notifications_sent: int,
+    notify_failed: bool,
+) -> None:
+    """Write the explicit collection result to FLI_SWEEP_RESULT, if set.
+
+    This file, not the process exit code, is the source of truth for
+    collection completeness: the scanner swallows per-search failures by
+    design, so exit 0 does not imply every intended unit was collected.
+    Consumers treat a missing file as an incomplete (crashed) sweep.
+    """
+    result_path = os.environ.get("FLI_SWEEP_RESULT")
+    if not result_path:
+        return
+    payload = {
+        "expected_units": stats.expected_units,
+        "completed_units": stats.completed_units,
+        "snapshots": snapshots,
+        "alerts_triggered": alerts_triggered,
+        "notifications_sent": notifications_sent,
+        "notify_failed": notify_failed,
+    }
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def watch(
@@ -59,8 +107,12 @@ def watch(
                 raise typer.Exit(1)
 
             typer.echo(f"Scanning route {route.id}: {route.origin} -> {route.destination}")
-            snapshots = scan_route(route)
+            stats = ScanStats(expected_units=route_units(route))
+            snapshots = scan_route(route, stats=stats)
 
+            sent = 0
+            triggers = []
+            notify_failure = None
             if snapshots:
                 # Check alerts BEFORE inserting so get_min_price
                 # reflects the previous low, not the current scan
@@ -70,12 +122,19 @@ def watch(
                 typer.echo(f"Stored {len(snapshots)} price snapshots")
 
                 if triggers:
-                    sent = send_digest(triggers, db)
+                    sent, notify_failure = _send_digest_contained(triggers, db)
                     typer.echo(f"Sent digest with {sent}/{len(triggers)} alerts")
                 else:
                     typer.echo("No alerts triggered")
             else:
                 typer.echo("No results found")
+
+            _write_sweep_result(
+                stats, len(snapshots), len(triggers), sent, notify_failure is not None
+            )
+            if notify_failure is not None:
+                typer.echo(f"Notification failed: {notify_failure}", err=True)
+                raise typer.Exit(2)
         else:
             routes = db.list_routes(active_only=True)
             if group_filter is not None:
@@ -91,10 +150,14 @@ def watch(
             typer.echo(f"Scanning {len(routes)} active route(s){group_label}...")
             total_snapshots = 0
             all_triggers = []
+            stats = ScanStats()
 
             for route in routes:
                 typer.echo(f"  {route.origin} -> {route.destination}...", nl=False)
-                snapshots = scan_route(route)
+                # Count intent before scanning so units the scanner never
+                # reaches still register as expected-but-not-completed
+                stats.expected_units += route_units(route)
+                snapshots = scan_route(route, stats=stats)
 
                 if snapshots:
                     # Check alerts BEFORE inserting so get_min_price
@@ -115,13 +178,21 @@ def watch(
 
             # Send one digest for all triggers from the sweep
             total_sent = 0
+            notify_failure = None
             if all_triggers:
-                total_sent = send_digest(all_triggers, db)
+                total_sent, notify_failure = _send_digest_contained(all_triggers, db)
 
             typer.echo(
                 f"Sweep complete: {total_snapshots} snapshots, "
                 f"{len(all_triggers)} alerts triggered, "
-                f"{total_sent} notifications sent"
+                f"{total_sent} notifications sent "
+                f"({stats.completed_units}/{stats.expected_units} units collected)"
             )
+            _write_sweep_result(
+                stats, total_snapshots, len(all_triggers), total_sent, notify_failure is not None
+            )
+            if notify_failure is not None:
+                typer.echo(f"Notification failed: {notify_failure}", err=True)
+                raise typer.Exit(2)
     finally:
         db.close()

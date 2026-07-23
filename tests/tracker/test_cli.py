@@ -5,7 +5,7 @@ the real ~/.fli/tracker.db.
 """
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 from fli.cli.main import app
 from fli.tracker.db import TrackerDB
 from fli.tracker.models import Alert, AlertType, PriceSnapshot, Route
+from fli.tracker.notifier import NotificationConfigError
 
 
 @pytest.fixture()
@@ -182,30 +183,40 @@ class TestTrackSnooze:
 class TestAlertAdd:
     def test_add_threshold_alert(self, runner, tmp_db):
         route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
-        result = runner.invoke(
-            app, ["alert", "add", str(route.id), "--below", "500", "--notify", "test://url"]
-        )
+        result = runner.invoke(app, ["alert", "add", str(route.id), "--below", "500"])
         assert result.exit_code == 0
         assert "threshold" in result.output
 
     def test_add_drop_alert(self, runner, tmp_db):
         route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
-        result = runner.invoke(
-            app, ["alert", "add", str(route.id), "--drop", "--notify", "test://url"]
-        )
+        result = runner.invoke(app, ["alert", "add", str(route.id), "--drop"])
         assert result.exit_code == 0
         assert "drop" in result.output
 
     def test_add_requires_type(self, runner, tmp_db):
         route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
-        result = runner.invoke(app, ["alert", "add", str(route.id), "--notify", "test://url"])
+        result = runner.invoke(app, ["alert", "add", str(route.id)])
         assert result.exit_code == 1
         assert "--below" in result.output or "--drop" in result.output
 
     def test_add_to_nonexistent_route(self, runner, tmp_db):
-        result = runner.invoke(app, ["alert", "add", "999", "--drop", "--notify", "test://url"])
+        result = runner.invoke(app, ["alert", "add", "999", "--drop"])
         assert result.exit_code == 1
         assert "not found" in result.output
+
+    def test_notify_flag_deprecated_and_never_stored(self, runner, tmp_db):
+        """--notify is accepted for compatibility but the URL never reaches the DB."""
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        result = runner.invoke(
+            app,
+            ["alert", "add", str(route.id), "--drop", "--notify", "mailto://u:SECRET@x.com"],
+        )
+        assert result.exit_code == 0
+        assert "deprecated" in result.output
+
+        stored = tmp_db.list_alerts(route_id=route.id)
+        assert len(stored) == 1
+        assert "SECRET" not in stored[0].notify_url
 
 
 class TestAlertList:
@@ -227,6 +238,21 @@ class TestAlertList:
         result = runner.invoke(app, ["alert", "list"])
         assert result.exit_code == 0
         assert "threshold" in result.output
+
+    def test_list_never_displays_stored_url(self, runner, tmp_db):
+        """Even a URL persisted directly in the DB is not displayed at all."""
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        tmp_db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="mailto://u:LEGACY-SECRET@x.com",
+            )
+        )
+        result = runner.invoke(app, ["alert", "list"])
+        assert result.exit_code == 0
+        assert "LEGACY-SECRET" not in result.output
+        assert "NOTIFY_URL" in result.output
 
 
 class TestAlertRemove:
@@ -298,6 +324,105 @@ class TestWatch:
         result = runner.invoke(app, ["watch", "--route", str(route.id)])
         assert result.exit_code == 1
         assert "paused" in result.output
+
+    @patch("fli.cli.commands.watch.send_digest")
+    @patch("fli.cli.commands.watch.check_alerts")
+    @patch("fli.cli.commands.watch.scan_route")
+    def test_notify_failure_cannot_cost_snapshots(
+        self, mock_scan, mock_check, mock_digest, runner, tmp_db
+    ):
+        """Notification is fail-closed for delivery, never fail-stop for persistence.
+
+        A NotificationConfigError after collection must leave snapshots
+        persisted and exit non-zero (visible failure, no data loss).
+        """
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        mock_scan.return_value = [
+            PriceSnapshot(
+                route_id=route.id, departure_date="2026-08-15", price=500.0, currency="USD"
+            )
+        ]
+        mock_check.return_value = [MagicMock()]
+        mock_digest.side_effect = NotificationConfigError("NOTIFY_URL is not configured")
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 2
+        row = tmp_db._conn.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()
+        assert row[0] == 1
+
+    @patch("fli.cli.commands.watch.send_digest")
+    @patch("fli.cli.commands.watch.check_alerts")
+    @patch("fli.cli.commands.watch.scan_route")
+    def test_delivery_failure_is_red_and_costs_nothing(
+        self, mock_scan, mock_check, mock_digest, runner, tmp_db
+    ):
+        """Every notification failure mode surfaces identically.
+
+        Delivery failure (not just missing config) must exit non-zero with
+        snapshots persisted; a green run on failed delivery was a 2026-07
+        incident review finding.
+        """
+        from fli.tracker.notifier import NotificationDeliveryError
+
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        mock_scan.return_value = [
+            PriceSnapshot(
+                route_id=route.id, departure_date="2026-08-15", price=500.0, currency="USD"
+            )
+        ]
+        mock_check.return_value = [MagicMock()]
+        mock_digest.side_effect = NotificationDeliveryError("digest delivery failed")
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 2
+        row = tmp_db._conn.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()
+        assert row[0] == 1
+
+    @patch("fli.cli.commands.watch.check_alerts", return_value=[])
+    @patch("fli.tracker.scanner.SearchDates")
+    def test_sweep_result_file_reports_explicit_counts(
+        self, mock_search_cls, mock_check, runner, tmp_db, tmp_path, monkeypatch
+    ):
+        """The result file, not the exit code, is the completeness source.
+
+        One route's search fails (swallowed by the scanner, exit stays 0);
+        expected_units != completed_units must record that.
+        """
+        import json
+        from unittest.mock import MagicMock as MM
+
+        tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        tmp_db.add_route(Route(origin="DFW", destination="ORD"))
+
+        mock_instance = MM()
+        mock_search_cls.return_value = mock_instance
+        mock_instance.search.side_effect = [Exception("API error"), None]
+
+        result_path = tmp_path / "sweep_result.json"
+        monkeypatch.setenv("FLI_SWEEP_RESULT", str(result_path))
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 0  # scanner swallows the failure by design
+        payload = json.loads(result_path.read_text())
+        assert payload["expected_units"] == 2
+        assert payload["completed_units"] == 1
+        assert payload["notify_failed"] is False
+
+    @patch("fli.cli.commands.watch.check_alerts", return_value=[])
+    @patch("fli.cli.commands.watch.scan_route", return_value=[])
+    def test_no_result_file_without_env(
+        self, mock_scan, mock_check, runner, tmp_db, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("FLI_SWEEP_RESULT", raising=False)
+        tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 0
+        assert not any(p.name == "sweep_result.json" for p in tmp_path.iterdir())
 
 
 # ------------------------------------------------------------------

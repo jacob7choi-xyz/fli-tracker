@@ -18,10 +18,6 @@ def _get_db() -> TrackerDB:
 @alert_app.command(name="add")
 def alert_add(
     route_id: Annotated[int, typer.Argument(help="Route ID to attach alert to")],
-    notify_url: Annotated[
-        str,
-        typer.Option("--notify", "-n", help="Apprise notification URL"),
-    ],
     below: Annotated[
         float | None,
         typer.Option("--below", "-b", help="Price threshold (alert when price is at or below)"),
@@ -30,20 +26,38 @@ def alert_add(
         bool,
         typer.Option("--drop", help="Alert on new all-time low prices"),
     ] = False,
+    notify_url: Annotated[
+        str | None,
+        typer.Option(
+            "--notify",
+            "-n",
+            help="Deprecated and ignored. Set the NOTIFY_URL environment variable instead.",
+        ),
+    ] = None,
 ):
     """Add a price alert to a tracked route.
 
     Use --below for threshold alerts, --drop for all-time low alerts.
     At least one of --below or --drop must be specified.
 
+    Notification delivery is configured via the NOTIFY_URL environment
+    variable (an Apprise URL), never stored in the database.
+
     Example:
-        fli alert add 1 --below 500 --notify "tgram://bottoken/chatid"
-        fli alert add 1 --drop --notify "discord://webhook_id/webhook_token"
+        fli alert add 1 --below 500
+        fli alert add 1 --drop
 
     """
     if below is None and not drop:
         typer.echo("Error: Specify --below <price> or --drop (or both)")
         raise typer.Exit(1)
+
+    if notify_url is not None:
+        typer.echo(
+            "Warning: --notify is deprecated and ignored. Notification URLs are "
+            "not stored; set the NOTIFY_URL environment variable instead.",
+            err=True,
+        )
 
     db = _get_db()
     route = db.get_route(route_id)
@@ -60,7 +74,6 @@ def alert_add(
                 route_id=route_id,
                 alert_type=AlertType.THRESHOLD,
                 threshold=below,
-                notify_url=notify_url,
             )
         )
         alerts_added.append(f"threshold (below {below}), id={alert.id}")
@@ -70,7 +83,6 @@ def alert_add(
             Alert(
                 route_id=route_id,
                 alert_type=AlertType.DROP,
-                notify_url=notify_url,
             )
         )
         alerts_added.append(f"drop (all-time low), id={alert.id}")
@@ -108,7 +120,7 @@ def alert_list(
     table.add_column("Route")
     table.add_column("Type")
     table.add_column("Threshold")
-    table.add_column("Notify URL")
+    table.add_column("Notify")
     table.add_column("Status")
 
     for a in alerts:
@@ -121,7 +133,7 @@ def alert_list(
             route_str,
             a.alert_type.value,
             threshold_str,
-            a.notify_url,
+            "configured via NOTIFY_URL",
             status,
         )
 

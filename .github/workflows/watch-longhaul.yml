@@ -2,16 +2,30 @@ name: Price Watch (Long-haul)
 
 on:
   schedule:
-    # Every 6 hours starting at 1am UTC (offset from domestic)
+    # Every 6 hours starting at 1am UTC (offset: domestic=0h, longhaul=1h, coastal=2h)
     - cron: "0 1,7,13,19 * * *"
   workflow_dispatch:
+    inputs:
+      simulate_notify_failure:
+        description: "SYNTHETIC FAULT INJECTION: run the sweep with NOTIFY_URL withheld"
+        type: boolean
+        default: false
+      simulate_db_push_failure:
+        description: "SYNTHETIC FAULT INJECTION: fail the DB push after archive publication"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# Shared serialization across all three watch workflows. queue: max keeps
+# every pending run (up to the platform cap of 100) instead of displacing
+# the single default pending slot; saturation beyond the cap and platform
+# queue-duration limits remain residual risk, bounded by timeout-minutes.
 concurrency:
   group: data-branch-write
   cancel-in-progress: false
+  queue: max
 
 jobs:
   sweep:
@@ -39,71 +53,152 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra tracker
 
-      - name: Prune old snapshots
+      - name: Prune old tracker data
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
         run: uv run python scripts/prune_tracker_db.py
 
-      - name: Update alert URLs from secret
-        env:
-          NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
-          FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
-        run: |
-          if [ -z "$NOTIFY_URL" ]; then
-            echo "::error::NOTIFY_URL secret is not set -- skipping alert URL update"
-            exit 1
-          fi
-          uv run python -c "
-          import os
-          from fli.tracker.db import TrackerDB
-          db = TrackerDB()
-          alerts = db.list_alerts(active_only=False)
-          notify_url = os.environ['NOTIFY_URL']
-          for alert in alerts:
-              db._conn.execute('UPDATE alerts SET notify_url = ? WHERE id = ?', (notify_url, alert.id))
-          db._conn.commit()
-          print(f'Updated {len(alerts)} alert URLs')
-          db.close()
-          "
-
       - name: Record sweep start
         run: echo "SWEEP_START=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
 
-      - name: Run long-haul sweep
+      - name: Run longhaul sweep
+        id: sweep
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
-        run: uv run fli watch --group longhaul --verbose
+          FLI_SWEEP_RESULT: ${{ github.workspace }}/sweep_result.json
+          NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
+          SIMULATE_NOTIFY_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_notify_failure }}
+        run: |
+          if [ "$SIMULATE_NOTIFY_FAILURE" = "true" ]; then
+            echo "::warning::SYNTHETIC FAULT INJECTION: NOTIFY_URL withheld from this sweep"
+            echo "## SYNTHETIC FAULT INJECTION: notify failure" >> "$GITHUB_STEP_SUMMARY"
+            unset NOTIFY_URL
+          fi
+          uv run fli watch --group longhaul --verbose
 
       - name: Record sweep end
+        if: always()
         run: echo "SWEEP_END=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
 
-      - name: Archive new snapshots
+      # Archive shards are the authoritative dataset (Tier A). Export and
+      # publication run under always() so ordinary sweep/notification
+      # failure on a surviving runner cannot prevent them; sudden runner
+      # loss remains a bounded one-sweep residual risk.
+      - name: Export archive shard and provenance
+        id: archive
+        if: always() && env.SWEEP_START != ''
         env:
           FLI_DB_PATH: ${{ github.workspace }}/data/tracker.db
           ARCHIVE_DIR: ${{ github.workspace }}/data/archive
+          RUNS_DIR: ${{ github.workspace }}/data/runs
           SWEEP_GROUP: longhaul
+          SLOT_OFFSET_HOURS: "1"
           SWEEP_START: ${{ env.SWEEP_START }}
-          SWEEP_END: ${{ env.SWEEP_END }}
-        run: uv run python scripts/export_snapshots.py
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SWEEP_TRIGGER: ${{ github.event_name }}
+          FLI_SWEEP_RESULT: ${{ github.workspace }}/sweep_result.json
+        run: |
+          if [ -z "$SWEEP_END" ]; then
+            SWEEP_END=$(date -u +'%Y-%m-%d %H:%M:%S')
+            export SWEEP_END
+          fi
+          uv run python scripts/export_snapshots.py
+        # SWEEP_END is inherited from GITHUB_ENV when the record step ran
+        # (env not redeclared here so the fallback above can detect absence)
 
-      - name: Push updated DB and archive
+      - name: Push archive (authoritative, before DB)
+        id: push_archive
+        if: always() && steps.archive.outcome == 'success'
         working-directory: data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add tracker.db
           git add archive/ 2>/dev/null || true
+          git add runs/ 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No archive changes to commit"
           else
-            git commit -m "Update long-haul prices $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "Archive longhaul sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
             for attempt in 1 2 3; do
               git pull --rebase origin data && git push && break
               if [ $attempt -eq 3 ]; then
-                echo "::error::Failed to push to data branch after 3 attempts"
+                echo "::error::Failed to push archive to data branch after 3 attempts"
                 exit 1
               fi
-              echo "Push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              echo "Archive push attempt $attempt failed, retrying in $((attempt * 5))s..."
               sleep $((attempt * 5))
             done
           fi
+
+      # tracker.db is non-authoritative operational state (Tier B). Its
+      # push is gated so DB size can never again threaten the archive:
+      # >= 90 MiB refuses the snapshot outright (GitHub rejects at 100 MiB).
+      - name: Push DB snapshot (guarded)
+        if: always() && steps.push_archive.outcome == 'success'
+        working-directory: data
+        env:
+          SIMULATE_DB_PUSH_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_db_push_failure }}
+        run: |
+          if [ "$SIMULATE_DB_PUSH_FAILURE" = "true" ]; then
+            echo "::error::SYNTHETIC FAULT INJECTION: DB push failed deliberately"
+            {
+              echo "## SYNTHETIC FAULT INJECTION: DB push failure"
+              echo "DATA COLLECTION: SUCCESS"
+              echo "DB SNAPSHOT: FAILED (synthetic)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          DB_BYTES=$(stat -c%s tracker.db)
+          WARN_BYTES=$((50 * 1024 * 1024))
+          HARD_BYTES=$((90 * 1024 * 1024))
+          if [ "$DB_BYTES" -ge "$HARD_BYTES" ]; then
+            echo "::error::tracker.db is ${DB_BYTES} bytes (>= 90 MiB safety limit); DB snapshot skipped, archive already durable"
+            {
+              echo "## DB size safety gate"
+              echo "DATA COLLECTION: SUCCESS"
+              echo "DB SNAPSHOT: FAILED SAFELY (size limit)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [ "$DB_BYTES" -ge "$WARN_BYTES" ]; then
+            echo "::warning::tracker.db is ${DB_BYTES} bytes (>= 50 MiB); investigate growth before the 90 MiB gate"
+            echo "WARNING: tracker.db at ${DB_BYTES} bytes (>= 50 MiB)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          git add tracker.db
+          if git diff --cached --quiet; then
+            echo "No DB changes to commit"
+          else
+            git commit -m "Update longhaul prices $(date -u +'%Y-%m-%d %H:%M UTC')"
+            for attempt in 1 2 3; do
+              git pull --rebase origin data && git push && break
+              if [ $attempt -eq 3 ]; then
+                echo "::error::Failed to push DB to data branch after 3 attempts"
+                exit 1
+              fi
+              echo "DB push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            done
+          fi
+
+      # Best-effort human-reach alarm. The red run is the authoritative
+      # signal; for push failures specifically, email is independent (it
+      # kept working through the entire 2026-06/07 push outage).
+      - name: Notify on failure (best effort)
+        if: failure()
+        continue-on-error: true
+        env:
+          NOTIFY_URL: ${{ secrets.NOTIFY_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          uv run python - <<'EOF'
+          import os
+
+          import apprise
+
+          ap = apprise.Apprise()
+          ap.add(os.environ["NOTIFY_URL"])
+          ap.notify(
+              title="Price Watch (Long-haul) run FAILED",
+              body=f"Workflow run failed: {os.environ['RUN_URL']}",
+          )
+          EOF

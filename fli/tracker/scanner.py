@@ -6,6 +6,7 @@ stores the results in the tracker database.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from fli.core.builders import build_date_search_segments
@@ -21,6 +22,33 @@ from fli.tracker.regions import RouteGroup, route_group
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ScanStats:
+    """Collection-completeness accounting for one sweep.
+
+    A unit is one SearchDates call: route x duration for round trips, one
+    per route for one-way. A unit is COMPLETED when its search returned,
+    including a legitimate zero-fare result (that is an observation); a
+    network/API/parser failure is not completed. expected_units is set by
+    the caller from intent, so units the scanner never reached still count
+    as expected. Exit code 0 does not imply completeness -- these counts
+    are the explicit collection result (2026-07 incident).
+    """
+
+    expected_units: int = 0
+    completed_units: int = 0
+
+    @property
+    def complete(self) -> bool:
+        """Whether every intended collection unit completed."""
+        return self.expected_units == self.completed_units
+
+
+def route_units(route: Route) -> int:
+    """Count the collection units this route's scan intends to attempt."""
+    return 1 if not route.is_round_trip else len(route.durations)
+
+
 def _search_duration(
     route: Route,
     duration: int,
@@ -30,8 +58,14 @@ def _search_duration(
     stops: MaxStops,
     start_date: date,
     end_date: date,
-) -> list[PriceSnapshot]:
-    """Run a single SearchDates call for one duration and return snapshots."""
+) -> list[PriceSnapshot] | None:
+    """Run a single SearchDates call for one duration.
+
+    Returns the snapshots (possibly an empty list: a search that returned
+    zero fares is still a completed observation), or None when the search
+    itself failed. Callers use the None/list distinction for completeness
+    accounting; the two must never be conflated.
+    """
     segments, trip_type = build_date_search_segments(
         origin=origin,
         destination=destination,
@@ -62,7 +96,7 @@ def _search_duration(
             route.destination,
             duration,
         )
-        return []
+        return None
 
     if not results:
         return []
@@ -83,7 +117,7 @@ def _search_duration(
     return snapshots
 
 
-def scan_route(route: Route) -> list[PriceSnapshot]:
+def scan_route(route: Route, stats: ScanStats | None = None) -> list[PriceSnapshot]:
     """Run date searches across all configured durations and return deduplicated snapshots.
 
     For each duration in route.durations, runs a separate SearchDates call.
@@ -92,6 +126,9 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
 
     Args:
         route: The tracked route to scan. Must have an assigned id.
+        stats: Optional completeness accounting; completed_units is
+            incremented for each search that returned (expected_units is
+            the caller's responsibility, counted from intent).
 
     Returns:
         List of PriceSnapshot objects. Empty list if no results
@@ -111,7 +148,7 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
 
     # For one-way routes, duration doesn't matter -- search once
     if not route.is_round_trip:
-        return _search_duration(
+        result = _search_duration(
             route,
             route.durations[0],
             origin,
@@ -121,13 +158,16 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
             start_date,
             end_date,
         )
+        if result is not None and stats is not None:
+            stats.completed_units += 1
+        return result or []
 
     # Search each duration and dedup by (departure_date, return_date, price)
     seen: set[tuple[str, str | None, float]] = set()
     all_snapshots: list[PriceSnapshot] = []
 
     for duration in route.durations:
-        snapshots = _search_duration(
+        result = _search_duration(
             route,
             duration,
             origin,
@@ -137,7 +177,11 @@ def scan_route(route: Route) -> list[PriceSnapshot]:
             start_date,
             end_date,
         )
-        for snap in snapshots:
+        if result is None:
+            continue
+        if stats is not None:
+            stats.completed_units += 1
+        for snap in result:
             key = (snap.departure_date, snap.return_date, snap.price)
             if key not in seen:
                 seen.add(key)
