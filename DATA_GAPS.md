@@ -29,6 +29,37 @@ a higher tier.
   NOTIFY_URL environment variable; failure is surfaced, never allowed to
   gate Tier A or B.
 
+## Accepted residual risks
+
+Explicitly accepted, none labeled impossible. Each names its mechanism and
+bound; none may be silently "fixed" into a stronger claim than the
+mechanism provides.
+
+- **Runner loss before publication**: if the CI runner dies before the
+  archive push, that sweep's observations are lost. Bounded to one sweep;
+  identical to the pre-incident exposure. Closing it requires incremental
+  external checkpointing during collection (deliberate non-goal).
+- **Delivery/dedup race**: notification submission succeeds, runner dies
+  before the dedup row commits; the next sweep may resend the same fare.
+  Accepted under the governing bias: false duplicate over false
+  suppression.
+- **Downstream email bounce**: the SMTP transaction is accepted, the
+  suppression row is written, and the message later bounces. The
+  application never learns; that exact fare event stays suppressed.
+  Accepted as low-risk and unobserved by design; closing it would require
+  bounce processing (webhook or mailbox monitoring), disproportionate for
+  this system.
+- **Concurrency queue saturation**: the shared writer group queues up to
+  the platform cap of 100 pending runs; work beyond the cap is rejected.
+  Bounded by 20-minute job timeouts; reaching the cap requires a
+  multi-day platform stall.
+- **Parse failure aborts the sweep**: a search response that returns but
+  fails parsing stops the sweep loudly (unexpected upstream contract
+  drift deserves visibility, not per-unit recovery). Already-collected
+  routes stay persisted, the attempt publishes as partial, the run goes
+  red. Downgrading specific parse failures to per-unit recovery is a
+  follow-up decision, not incident scope.
+
 ## The 2026-06/07 collection outage
 
 Root cause: `notification_log.message` stored the full digest email HTML
