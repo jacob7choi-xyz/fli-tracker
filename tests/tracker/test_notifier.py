@@ -15,6 +15,8 @@ from fli.tracker.models import Alert, AlertType, MonthlyStats, PriceSnapshot, Ro
 from fli.tracker.notifier import (
     LegDetail,
     NotificationConfigError,
+    NotificationDeliveryError,
+    NotificationDependencyError,
     _build_search_url,
     _build_title,
     _build_trend_line,
@@ -633,7 +635,16 @@ class TestSendNotification:
     @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
-    def test_failed_send_still_logs(self, mock_apprise_mod, _mock_details, db: TrackerDB):
+    def test_failed_send_raises_and_stays_retry_eligible(
+        self, mock_apprise_mod, _mock_details, db: TrackerDB
+    ):
+        """A failed delivery must NOT be recorded as sent.
+
+        A suppression row for a message the user never received would
+        permanently silence the fare event. Failure raises, no dedup row
+        is written, and the next sweep may retry (false duplicate over
+        false suppression).
+        """
         route = db.add_route(Route(origin="DFW", destination="FCO"))
         alert = db.add_alert(
             Alert(
@@ -649,11 +660,10 @@ class TestSendNotification:
         mock_apprise_mod.Apprise.return_value = mock_ap
         mock_ap.notify.return_value = False
 
-        result = send_notification(trigger, db)
+        with pytest.raises(NotificationDeliveryError):
+            send_notification(trigger, db)
 
-        assert result is False
-        # Notification should still be logged for dedup
-        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is False
 
     @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
@@ -685,21 +695,11 @@ class TestSendNotification:
         assert rows[0]["message"] == "single"
 
     @patch("fli.tracker.notifier._HAS_APPRISE", False)
-    def test_missing_apprise_returns_false(self, db: TrackerDB):
-        """If apprise is not installed, send_notification returns False."""
-        route = db.add_route(Route(origin="DFW", destination="FCO"))
-        alert = db.add_alert(
-            Alert(
-                route_id=route.id,
-                alert_type=AlertType.DROP,
-                notify_url="test://url",
-            )
-        )
-
-        trigger = _make_trigger(alert_id=alert.id, route_id=route.id)
-        result = send_notification(trigger, db)
-
-        assert result is False
+    def test_missing_apprise_raises(self, db: TrackerDB):
+        """A missing dependency is a lost capability, not a skipped feature."""
+        trigger = _make_trigger()
+        with pytest.raises(NotificationDependencyError):
+            send_notification(trigger, db)
 
 
 # ------------------------------------------------------------------
@@ -721,13 +721,14 @@ class TestNotifyAll:
         assert mock_send.call_count == 2
 
     @patch("fli.tracker.notifier.send_notification")
-    def test_counts_only_successful(self, mock_send, db: TrackerDB):
-        mock_send.side_effect = [True, False, True]
+    def test_continues_past_failures_and_counts_delivered(self, mock_send, db: TrackerDB):
+        mock_send.side_effect = [True, NotificationDeliveryError("failed"), True]
         triggers = [_make_trigger(), _make_trigger(price=400.0), _make_trigger(price=350.0)]
 
         sent = notify_all(triggers, db)
 
         assert sent == 2
+        assert mock_send.call_count == 3
 
     @patch("fli.tracker.notifier.send_notification")
     def test_empty_triggers(self, mock_send, db: TrackerDB):
@@ -985,9 +986,10 @@ class TestSendDigest:
         assert send_digest([], db) == 0
 
     @patch("fli.tracker.notifier._HAS_APPRISE", False)
-    def test_no_apprise_returns_zero(self, db: TrackerDB):
+    def test_no_apprise_raises(self, db: TrackerDB):
         trigger = _make_trigger()
-        assert send_digest([trigger], db) == 0
+        with pytest.raises(NotificationDependencyError):
+            send_digest([trigger], db)
 
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
@@ -1027,8 +1029,13 @@ class TestSendDigest:
 
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
-    def test_delivery_failure_returns_zero(self, mock_apprise_mod, db: TrackerDB):
-        """When Apprise delivery fails, returns zero but still logs for dedup."""
+    def test_delivery_failure_raises_and_writes_no_dedup(self, mock_apprise_mod, db: TrackerDB):
+        """A failed digest must leave every fare event retry-eligible.
+
+        was_notification_sent must mean the user was actually told; writing
+        suppression rows for undelivered digests would permanently silence
+        the deals (2026-07 incident review finding).
+        """
         route = db.add_route(Route(origin="DFW", destination="FCO"))
         alert = db.add_alert(
             Alert(
@@ -1043,10 +1050,37 @@ class TestSendDigest:
         mock_apprise_mod.Apprise.return_value = mock_ap
         mock_ap.notify.return_value = False
 
+        with pytest.raises(NotificationDeliveryError):
+            send_digest([trigger], db)
+
+        assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is False
+        rows = db._conn.execute("SELECT COUNT(*) FROM notification_log").fetchone()[0]
+        assert rows == 0
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_retry_after_failure_delivers_and_logs(self, mock_apprise_mod, db: TrackerDB):
+        """The sweep after a failed delivery can send the same fare event."""
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(
+            Alert(
+                route_id=route.id,
+                alert_type=AlertType.DROP,
+                notify_url="test://url",
+            )
+        )
+        trigger = _make_trigger(price=450.0, alert_id=alert.id, route_id=route.id)
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = False
+        with pytest.raises(NotificationDeliveryError):
+            send_digest([trigger], db)
+
+        mock_ap.notify.return_value = True
         sent = send_digest([trigger], db)
 
-        assert sent == 0
-        # Still logged for dedup even on failure
+        assert sent == 1
         assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
 
     def test_all_triggers_above_max_price_returns_zero(self, db: TrackerDB):
@@ -1152,14 +1186,21 @@ class TestSecretObservabilityBoundaries:
         mock_apprise_mod.Apprise.return_value = mock_ap
         mock_ap.notify.return_value = delivery_ok
 
+        exception_text = ""
         with caplog.at_level("DEBUG"):
-            send_digest([trigger], db)
+            if delivery_ok:
+                send_digest([trigger], db)
+            else:
+                with pytest.raises(NotificationDeliveryError) as exc_info:
+                    send_digest([trigger], db)
+                exception_text = str(exc_info.value)
         db.close()
 
         captured = capsys.readouterr()
         assert self.SECRET not in captured.out
         assert self.SECRET not in captured.err
         assert self.SECRET not in caplog.text
+        assert self.SECRET not in exception_text
         assert self.SECRET.encode() not in db_path.read_bytes()
 
     @patch("fli.tracker.notifier.apprise")

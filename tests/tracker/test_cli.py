@@ -351,6 +351,35 @@ class TestWatch:
         row = tmp_db._conn.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()
         assert row[0] == 1
 
+    @patch("fli.cli.commands.watch.send_digest")
+    @patch("fli.cli.commands.watch.check_alerts")
+    @patch("fli.cli.commands.watch.scan_route")
+    def test_delivery_failure_is_red_and_costs_nothing(
+        self, mock_scan, mock_check, mock_digest, runner, tmp_db
+    ):
+        """Every notification failure mode surfaces identically.
+
+        Delivery failure (not just missing config) must exit non-zero with
+        snapshots persisted; a green run on failed delivery was a 2026-07
+        incident review finding.
+        """
+        from fli.tracker.notifier import NotificationDeliveryError
+
+        route = tmp_db.add_route(Route(origin="DFW", destination="FCO"))
+        mock_scan.return_value = [
+            PriceSnapshot(
+                route_id=route.id, departure_date="2026-08-15", price=500.0, currency="USD"
+            )
+        ]
+        mock_check.return_value = [MagicMock()]
+        mock_digest.side_effect = NotificationDeliveryError("digest delivery failed")
+
+        result = runner.invoke(app, ["watch"])
+
+        assert result.exit_code == 2
+        row = tmp_db._conn.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()
+        assert row[0] == 1
+
     @patch("fli.cli.commands.watch.check_alerts", return_value=[])
     @patch("fli.tracker.scanner.SearchDates")
     def test_sweep_result_file_reports_explicit_counts(

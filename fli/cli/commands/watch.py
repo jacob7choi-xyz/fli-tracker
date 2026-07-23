@@ -9,25 +9,26 @@ import typer
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
-from fli.tracker.notifier import NotificationConfigError, send_digest
+from fli.tracker.notifier import NotificationError, send_digest
 from fli.tracker.regions import RouteGroup, route_group
 from fli.tracker.scanner import ScanStats, route_units, scan_route
 
 logger = logging.getLogger(__name__)
 
 
-def _send_digest_contained(triggers, db) -> tuple[int, bool]:
+def _send_digest_contained(triggers, db) -> tuple[int, str | None]:
     """Send the digest without letting notification failure abort the sweep.
 
-    Collection and persistence happen before this point; a notification
-    configuration error must never cost collected data. Returns
-    (notifications_sent, notify_failed).
+    Collection and persistence happen before this point; NO notification
+    failure (config, dependency, or delivery) may cost collected data --
+    and every one of them must surface identically as a red run. Returns
+    (notifications_sent, failure_reason_or_None).
     """
     try:
-        return send_digest(triggers, db), False
-    except NotificationConfigError:
-        logger.error("Notification skipped: NOTIFY_URL is not configured")
-        return 0, True
+        return send_digest(triggers, db), None
+    except NotificationError as exc:
+        logger.error("Notification failed: %s", exc)
+        return 0, str(exc)
 
 
 def _write_sweep_result(
@@ -111,7 +112,7 @@ def watch(
 
             sent = 0
             triggers = []
-            notify_failed = False
+            notify_failure = None
             if snapshots:
                 # Check alerts BEFORE inserting so get_min_price
                 # reflects the previous low, not the current scan
@@ -121,16 +122,18 @@ def watch(
                 typer.echo(f"Stored {len(snapshots)} price snapshots")
 
                 if triggers:
-                    sent, notify_failed = _send_digest_contained(triggers, db)
+                    sent, notify_failure = _send_digest_contained(triggers, db)
                     typer.echo(f"Sent digest with {sent}/{len(triggers)} alerts")
                 else:
                     typer.echo("No alerts triggered")
             else:
                 typer.echo("No results found")
 
-            _write_sweep_result(stats, len(snapshots), len(triggers), sent, notify_failed)
-            if notify_failed:
-                typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
+            _write_sweep_result(
+                stats, len(snapshots), len(triggers), sent, notify_failure is not None
+            )
+            if notify_failure is not None:
+                typer.echo(f"Notification failed: {notify_failure}", err=True)
                 raise typer.Exit(2)
         else:
             routes = db.list_routes(active_only=True)
@@ -175,9 +178,9 @@ def watch(
 
             # Send one digest for all triggers from the sweep
             total_sent = 0
-            notify_failed = False
+            notify_failure = None
             if all_triggers:
-                total_sent, notify_failed = _send_digest_contained(all_triggers, db)
+                total_sent, notify_failure = _send_digest_contained(all_triggers, db)
 
             typer.echo(
                 f"Sweep complete: {total_snapshots} snapshots, "
@@ -186,10 +189,10 @@ def watch(
                 f"({stats.completed_units}/{stats.expected_units} units collected)"
             )
             _write_sweep_result(
-                stats, total_snapshots, len(all_triggers), total_sent, notify_failed
+                stats, total_snapshots, len(all_triggers), total_sent, notify_failure is not None
             )
-            if notify_failed:
-                typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
+            if notify_failure is not None:
+                typer.echo(f"Notification failed: {notify_failure}", err=True)
                 raise typer.Exit(2)
     finally:
         db.close()

@@ -32,11 +32,40 @@ MESSAGE_SINGLE = "single"
 MESSAGE_DIGEST = "digest"
 
 
-class NotificationConfigError(RuntimeError):
+class NotificationError(RuntimeError):
+    """Base for every way the notification capability can fail.
+
+    All notification failures normalize to this hierarchy so callers have
+    ONE containment path: collection and archive survive, the run goes red.
+    Distinct failure modes must never diverge into different behaviors
+    (green-on-delivery-failure was a 2026-07 incident review finding).
+    """
+
+
+class NotificationConfigError(NotificationError):
     """Raised when notification delivery is requested but NOTIFY_URL is not set.
 
     Fail-closed by design: there is no fallback to database-stored URLs.
     Credentials are resolved from the environment at send time only.
+    """
+
+
+class NotificationDeliveryError(NotificationError):
+    """Raised when Apprise reports the notification was not delivered.
+
+    No dedup rows are written for failed deliveries: a suppression record
+    for a message the user never received would permanently silence that
+    fare event. Bias: false duplicate over false suppression -- a delivery
+    falsely reported as failed costs one repeat email next sweep; a
+    suppression row on a real failure costs a deal never seen.
+    """
+
+
+class NotificationDependencyError(NotificationError):
+    """Raised when the apprise package is not importable.
+
+    A missing dependency is a lost capability, not a skippable feature:
+    treating it as a log-line-and-continue made it a silent failure mode.
     """
 
 
@@ -648,24 +677,30 @@ def format_message(
 
 
 def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
-    """Send a notification for a triggered alert and log it.
+    """Send a notification for a triggered alert and log it on delivery.
 
-    Uses Apprise to deliver the message to the URL configured on the alert.
-    Logs a NotificationRecord to the database regardless of delivery success
-    for deduplication purposes (prevents retrying the same notification
-    indefinitely on transient failures).
+    Dedup rows are written ONLY after successful delivery: a suppression
+    record must mean the user was actually told. A failed delivery leaves
+    the fare event retry-eligible on the next sweep (bias: false duplicate
+    over false suppression).
 
     Args:
         trigger: The triggered alert to notify about.
         db: Tracker database for logging the notification.
 
     Returns:
-        True if the notification was delivered successfully, False otherwise.
+        True on successful delivery.
+
+    Raises:
+        NotificationDependencyError: If apprise is not installed.
+        NotificationConfigError: If NOTIFY_URL is not set.
+        NotificationDeliveryError: If Apprise reports delivery failure.
 
     """
     if not _HAS_APPRISE:
-        logger.error("apprise is not installed. Install it with: uv add apprise")
-        return False
+        raise NotificationDependencyError(
+            "apprise is not installed. Install it with: uv sync --extra tracker"
+        )
 
     # Resolve before any work or dedup logging: a config error must not
     # suppress future delivery of this fare event once config is fixed.
@@ -679,11 +714,17 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
     ap.add(notify_url)
 
     success = ap.notify(body=message, title=title)
+    if not success:
+        logger.error(
+            "Notification delivery failed for %s -> %s",
+            trigger.route.origin,
+            trigger.route.destination,
+        )
+        raise NotificationDeliveryError("notification delivery failed")
 
-    # Log regardless of success to prevent re-sending on transient failures.
-    # message is a constant marker: dedup reads only the structural columns,
-    # and storing rendered bodies is what bloated tracker.db past GitHub's
-    # 100 MiB push limit (2026-07 incident).
+    # Delivered: now it is true that the notification was sent. message is
+    # a constant marker: dedup reads only the structural columns, and
+    # storing rendered bodies caused the 2026-07 DB bloat incident.
     db.log_notification(
         NotificationRecord(
             alert_id=trigger.alert.id,
@@ -693,19 +734,8 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
             message=MESSAGE_SINGLE,
         )
     )
-
-    if success:
-        logger.info(
-            "Notification sent for %s -> %s", trigger.route.origin, trigger.route.destination
-        )
-    else:
-        logger.error(
-            "Notification delivery failed for %s -> %s",
-            trigger.route.origin,
-            trigger.route.destination,
-        )
-
-    return success
+    logger.info("Notification sent for %s -> %s", trigger.route.origin, trigger.route.destination)
+    return True
 
 
 def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
@@ -724,8 +754,15 @@ def notify_all(triggers: list[AlertTrigger], db: TrackerDB) -> int:
 
     sent = 0
     for trigger in triggers:
-        if send_notification(trigger, db):
-            sent += 1
+        try:
+            if send_notification(trigger, db):
+                sent += 1
+        except NotificationError:
+            logger.error(
+                "Notification failed for %s -> %s; continuing with remaining triggers",
+                trigger.route.origin,
+                trigger.route.destination,
+            )
 
     logger.info("Sent %d/%d notifications", sent, len(triggers))
     return sent
@@ -925,15 +962,21 @@ def format_digest(triggers: list[AlertTrigger], db: TrackerDB) -> str:
 def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     """Send a single digest email containing all triggered alerts.
 
-    Groups triggers by notify_url and sends one digest per URL.
-    Logs each trigger individually for dedup regardless of delivery success.
+    The target comes from the NOTIFY_URL environment variable. Dedup rows
+    are written ONLY after successful delivery, so failed digests leave
+    every fare event retry-eligible on the next sweep.
 
     Args:
         triggers: All triggers from a single sweep.
         db: Tracker database for logging and stats.
 
     Returns:
-        Number of triggers included in successfully sent digests.
+        Number of triggers in the delivered digest (0 if none qualified).
+
+    Raises:
+        NotificationDependencyError: If apprise is not installed.
+        NotificationConfigError: If NOTIFY_URL is not set.
+        NotificationDeliveryError: If Apprise reports delivery failure.
 
     """
     if not triggers:
@@ -964,8 +1007,9 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
         return 0
 
     if not _HAS_APPRISE:
-        logger.error("apprise is not installed. Install it with: uv add apprise")
-        return 0
+        raise NotificationDependencyError(
+            "apprise is not installed. Install it with: uv sync --extra tracker"
+        )
 
     # Resolve before any work or dedup logging: a config error must not
     # suppress future delivery of these fare events once config is fixed.
@@ -983,11 +1027,17 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     ap = apprise.Apprise()
     ap.add(notify_url)
     success = ap.notify(body=body, title=title, body_format="html")
+    if not success:
+        # No dedup rows: a suppression record for a digest the user never
+        # received would permanently silence these fare events. They stay
+        # retry-eligible next sweep (false duplicate over false suppression).
+        logger.error("Digest delivery failed")
+        raise NotificationDeliveryError("digest delivery failed")
 
-    # Log each trigger for dedup regardless of delivery success.
-    # message is a constant marker: dedup reads only the structural columns,
-    # and storing the rendered digest HTML once per trigger is what bloated
-    # tracker.db past GitHub's 100 MiB push limit (2026-07 incident).
+    # Delivered: log each trigger for dedup. message is a constant marker:
+    # dedup reads only the structural columns, and storing the rendered
+    # digest HTML once per trigger is what bloated tracker.db past GitHub's
+    # 100 MiB push limit (2026-07 incident).
     for trigger in triggers:
         db.log_notification(
             NotificationRecord(
@@ -999,12 +1049,8 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
             )
         )
 
-    if success:
-        logger.info("Digest sent: %d alerts", count)
-        return count
-
-    logger.error("Digest delivery failed")
-    return 0
+    logger.info("Digest sent: %d alerts", count)
+    return count
 
 
 def _build_title(
