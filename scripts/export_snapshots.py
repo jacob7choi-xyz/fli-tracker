@@ -13,9 +13,11 @@ Environment variables:
     SWEEP_START  -- inclusive lower bound, SQLite UTC format: YYYY-MM-DD HH:MM:SS
     SWEEP_END    -- exclusive upper bound, SQLite UTC format: YYYY-MM-DD HH:MM:SS
 
-Provenance (all optional; the manifest is skipped unless RUNS_DIR is set):
+Provenance (the manifest is skipped unless RUNS_DIR is set; when RUNS_DIR
+is set, RUN_ID becomes REQUIRED -- attempt identity is never fabricated):
     RUNS_DIR          -- directory for runs/<attempt_id>.json records
-    RUN_ID            -- GITHUB_RUN_ID (stable across re-runs)
+    RUN_ID            -- GITHUB_RUN_ID (stable across re-runs); required
+                         with RUNS_DIR
     RUN_ATTEMPT       -- GITHUB_RUN_ATTEMPT (increments per re-run)
     SWEEP_TRIGGER     -- github.event_name (schedule / workflow_dispatch)
     SLOT_OFFSET_HOURS -- this group's cron offset on the 6-hour grid
@@ -93,16 +95,22 @@ def scheduled_slot(sweep_start: str, offset_hours: int) -> str:
 
 
 def read_collection_result(result_path: str | None) -> dict | None:
-    """Read the sweep's explicit collection result, if it exists.
+    """Read the sweep's explicit collection result, if it exists and parses.
 
-    A missing file means the sweep died before writing its result: the
-    attempt is partial by definition. Exit codes are never consulted --
+    A missing OR unreadable/malformed file means the sweep died before (or
+    while) writing its result: the attempt is partial by definition, and a
+    corrupt result file must never block archive publication (Tier A may
+    not be gated on lower-tier inputs). Exit codes are never consulted --
     the scanner swallows per-search failures, so exit 0 proves nothing.
     """
     if not result_path or not os.path.exists(result_path):
         return None
-    with open(result_path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(result_path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        print(f"Warning: sweep result unreadable ({result_path}); treating attempt as partial")
+        return None
 
 
 def build_manifest(
@@ -127,7 +135,10 @@ def build_manifest(
     """
     expected = result.get("expected_units") if result else None
     completed = result.get("completed_units") if result else None
-    complete = result is not None and expected == completed
+    # complete requires BOTH counts present and equal. A schema-drifted
+    # result file missing the keys would otherwise yield None == None and
+    # fabricate completeness; absent evidence classifies as partial.
+    complete = expected is not None and completed is not None and expected == completed
     return {
         "attempt_id": attempt_id,
         "scheduled_slot": scheduled_slot(sweep_start, slot_offset_hours),
@@ -190,9 +201,16 @@ def main() -> None:
     if not runs_dir:
         return
 
+    run_id = os.environ.get("RUN_ID")
+    if not run_id:
+        raise RuntimeError(
+            "RUN_ID is required when RUNS_DIR is set (GITHUB_RUN_ID in CI); "
+            "attempt identity is never fabricated"
+        )
+
     result = read_collection_result(os.environ.get("FLI_SWEEP_RESULT"))
     manifest = build_manifest(
-        attempt_id=f"{os.environ['RUN_ID']}-{os.environ.get('RUN_ATTEMPT', '1')}",
+        attempt_id=f"{run_id}-{os.environ.get('RUN_ATTEMPT', '1')}",
         group=group,
         trigger=os.environ.get("SWEEP_TRIGGER", "unknown"),
         sweep_start=sweep_start,

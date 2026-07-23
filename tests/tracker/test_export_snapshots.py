@@ -133,6 +133,58 @@ class TestCollectionStatus:
         assert export_mod.read_collection_result(None) is None
         assert export_mod.read_collection_result(str(tmp_path / "absent.json")) is None
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '{"expected_units": 5, "completed_',  # truncated mid-write
+            "not json at all",
+            "",
+        ],
+    )
+    def test_corrupt_result_file_reads_none_without_raising(self, tmp_path, content):
+        """A malformed result file must never block archive publication.
+
+        The archive push is gated on the export step succeeding; raising
+        here would let a lower-tier input block Tier A (Qodo finding 1).
+        """
+        path = tmp_path / "sweep_result.json"
+        path.write_text(content)
+        assert export_mod.read_collection_result(str(path)) is None
+
+    def test_result_missing_unit_keys_is_partial(self):
+        """Valid JSON without unit counts must NOT classify as complete.
+
+        None == None would otherwise fabricate completeness from a
+        schema-drifted result file (Qodo finding 3).
+        """
+        m = export_mod.build_manifest(
+            attempt_id="9-1",
+            group="domestic",
+            trigger="schedule",
+            sweep_start="2026-07-24 06:00:00",
+            sweep_end="2026-07-24 06:10:00",
+            slot_offset_hours=0,
+            shard_path=None,
+            row_count=0,
+            sha256=None,
+            result={"snapshots": 12},  # valid JSON, wrong schema
+        )
+        assert m["collection_status"] == "partial"
+
+    def test_run_id_required_when_runs_dir_set(self, seeded_db, monkeypatch):
+        """Attempt identity is never fabricated (Qodo finding 2)."""
+        db, tmp_path = seeded_db
+        monkeypatch.setenv("FLI_DB_PATH", str(tmp_path / "test.db"))
+        monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path / "archive"))
+        monkeypatch.setenv("SWEEP_GROUP", "domestic")
+        monkeypatch.setenv("SWEEP_START", "2026-07-24 06:00:00")
+        monkeypatch.setenv("SWEEP_END", "2026-07-24 07:00:00")
+        monkeypatch.setenv("RUNS_DIR", str(tmp_path / "runs"))
+        monkeypatch.delenv("RUN_ID", raising=False)
+
+        with pytest.raises(RuntimeError, match="RUN_ID is required"):
+            export_mod.main()
+
 
 class TestManifestImmutability:
     def _manifest(self):
