@@ -55,14 +55,25 @@ class PriceSnapshot(BaseModel):
     scanned_at: datetime | None = None
 
 
+# Sentinel stored in alerts.notify_url. The real notification target is
+# resolved from the NOTIFY_URL environment variable at send time; credentials
+# are never persisted in the database.
+ENV_NOTIFY_PLACEHOLDER = "<env:NOTIFY_URL>"
+
+
 class Alert(BaseModel):
-    """An alert configuration attached to a route."""
+    """An alert configuration attached to a route.
+
+    notify_url is vestigial: it satisfies the NOT NULL column but carries no
+    credential. Notification targets come from the NOTIFY_URL environment
+    variable exclusively.
+    """
 
     id: int | None = None
     route_id: int
     alert_type: AlertType
     threshold: float | None = None
-    notify_url: str
+    notify_url: str = ENV_NOTIFY_PLACEHOLDER
     active: bool = True
     created_at: datetime | None = None
 

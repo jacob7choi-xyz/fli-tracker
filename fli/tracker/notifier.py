@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -22,6 +23,28 @@ from fli.tracker.detector import AlertTrigger
 from fli.tracker.models import AlertType, NotificationRecord, RouteStats
 
 logger = logging.getLogger(__name__)
+
+
+class NotificationConfigError(RuntimeError):
+    """Raised when notification delivery is requested but NOTIFY_URL is not set.
+
+    Fail-closed by design: there is no fallback to database-stored URLs.
+    Credentials are resolved from the environment at send time only.
+    """
+
+
+def _resolve_notify_url() -> str:
+    """Return the notification target from the NOTIFY_URL environment variable.
+
+    Raises:
+        NotificationConfigError: If NOTIFY_URL is unset or empty.
+
+    """
+    url = os.environ.get("NOTIFY_URL")
+    if not url:
+        raise NotificationConfigError("NOTIFY_URL is not configured")
+    return url
+
 
 try:
     import apprise
@@ -637,12 +660,16 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
         logger.error("apprise is not installed. Install it with: uv add apprise")
         return False
 
+    # Resolve before any work or dedup logging: a config error must not
+    # suppress future delivery of this fare event once config is fixed.
+    notify_url = _resolve_notify_url()
+
     stats = db.get_route_stats(trigger.route.id)
     message = format_message(trigger, _stats=stats)
     title = _build_title(trigger, _stats=stats)
 
     ap = apprise.Apprise()
-    ap.add(trigger.alert.notify_url)
+    ap.add(notify_url)
 
     success = ap.notify(body=message, title=title)
 
@@ -663,10 +690,9 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
         )
     else:
         logger.error(
-            "Notification delivery failed for %s -> %s via %s",
+            "Notification delivery failed for %s -> %s",
             trigger.route.origin,
             trigger.route.destination,
-            trigger.alert.notify_url,
         )
 
     return success
@@ -931,47 +957,41 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
         logger.error("apprise is not installed. Install it with: uv add apprise")
         return 0
 
-    # Group triggers by notify_url
+    # Resolve before any work or dedup logging: a config error must not
+    # suppress future delivery of these fare events once config is fixed.
+    notify_url = _resolve_notify_url()
+
     triggers = filtered
-    by_url: dict[str, list[AlertTrigger]] = {}
+    body = format_digest(triggers, db)
+    # Short subject for mobile: best deal at a glance
+    best = min(triggers, key=lambda t: t.snapshot.price)
+    dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
+    count = len(triggers)
+    plural = "s" if count != 1 else ""
+    title = f"{count} deal{plural} - best {dest_city} ${best.snapshot.price:.0f}"
+
+    ap = apprise.Apprise()
+    ap.add(notify_url)
+    success = ap.notify(body=body, title=title, body_format="html")
+
+    # Log each trigger for dedup regardless of delivery success
     for trigger in triggers:
-        url = trigger.alert.notify_url
-        by_url.setdefault(url, []).append(trigger)
-
-    total_sent = 0
-
-    for url, url_triggers in by_url.items():
-        body = format_digest(url_triggers, db)
-        # Short subject for mobile: best deal at a glance
-        best = min(url_triggers, key=lambda t: t.snapshot.price)
-        dest_city = _AIRPORT_LOCATIONS.get(best.route.destination, best.route.destination)
-        count = len(url_triggers)
-        plural = "s" if count != 1 else ""
-        title = f"{count} deal{plural} - best {dest_city} ${best.snapshot.price:.0f}"
-
-        ap = apprise.Apprise()
-        ap.add(url)
-        success = ap.notify(body=body, title=title, body_format="html")
-
-        # Log each trigger for dedup regardless of delivery success
-        for trigger in url_triggers:
-            db.log_notification(
-                NotificationRecord(
-                    alert_id=trigger.alert.id,
-                    departure_date=trigger.snapshot.departure_date,
-                    return_date=trigger.snapshot.return_date,
-                    price=trigger.snapshot.price,
-                    message=body,
-                )
+        db.log_notification(
+            NotificationRecord(
+                alert_id=trigger.alert.id,
+                departure_date=trigger.snapshot.departure_date,
+                return_date=trigger.snapshot.return_date,
+                price=trigger.snapshot.price,
+                message=body,
             )
+        )
 
-        if success:
-            total_sent += len(url_triggers)
-            logger.info("Digest sent: %d alerts via %s", len(url_triggers), url)
-        else:
-            logger.error("Digest delivery failed via %s", url)
+    if success:
+        logger.info("Digest sent: %d alerts", count)
+        return count
 
-    return total_sent
+    logger.error("Digest delivery failed")
+    return 0
 
 
 def _build_title(

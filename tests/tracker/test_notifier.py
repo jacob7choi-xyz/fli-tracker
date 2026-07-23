@@ -14,6 +14,7 @@ from fli.tracker.detector import AlertTrigger
 from fli.tracker.models import Alert, AlertType, MonthlyStats, PriceSnapshot, Route, RouteStats
 from fli.tracker.notifier import (
     LegDetail,
+    NotificationConfigError,
     _build_search_url,
     _build_title,
     _build_trend_line,
@@ -599,6 +600,11 @@ class TestFormatMessage:
 class TestSendNotification:
     """Tests for notification delivery and logging."""
 
+    @pytest.fixture(autouse=True)
+    def notify_env(self, monkeypatch):
+        """Notification target comes from the environment, never the DB."""
+        monkeypatch.setenv("NOTIFY_URL", "test://url")
+
     @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
@@ -900,6 +906,11 @@ class TestFormatDigest:
 class TestSendDigest:
     """Tests for digest delivery."""
 
+    @pytest.fixture(autouse=True)
+    def notify_env(self, monkeypatch):
+        """Notification target comes from the environment, never the DB."""
+        monkeypatch.setenv("NOTIFY_URL", "test://url")
+
     @patch("fli.tracker.notifier.apprise")
     @patch("fli.tracker.notifier._HAS_APPRISE", True)
     def test_sends_one_email_for_multiple_triggers(self, mock_apprise_mod, db: TrackerDB):
@@ -1030,6 +1041,125 @@ class TestSendDigest:
         """If all triggers exceed max_price, nothing is sent."""
         trigger = _make_trigger(price=1000.0, max_price=800.0)
         assert send_digest([trigger], db) == 0
+
+
+class TestFailClosedCredentials:
+    """NOTIFY_URL is resolved from the environment only, failing closed.
+
+    There is no fallback to alerts.notify_url: persisting credentials in the
+    database is the incident class this architecture removes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_notify_env(self, monkeypatch):
+        monkeypatch.delenv("NOTIFY_URL", raising=False)
+
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_send_notification_raises_without_env(
+        self, mock_apprise_mod, _mock_details, db: TrackerDB
+    ):
+        trigger = _make_trigger()
+        with pytest.raises(NotificationConfigError):
+            send_notification(trigger, db)
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_send_digest_raises_without_env(self, mock_apprise_mod, db: TrackerDB):
+        trigger = _make_trigger()
+        with pytest.raises(NotificationConfigError):
+            send_digest([trigger], db)
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_config_error_does_not_log_dedup_rows(self, mock_apprise_mod, db: TrackerDB):
+        """A config error must not suppress future delivery of the same fare.
+
+        Dedup rows are only written after the target resolves; otherwise the
+        fare event would be permanently silenced once config is fixed.
+        """
+        trigger = _make_trigger()
+        with pytest.raises(NotificationConfigError):
+            send_digest([trigger], db)
+
+        assert db.was_notification_sent(1, "2026-07-15", 450.0, "2026-07-22") is False
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_db_stored_url_is_never_used(self, mock_apprise_mod, monkeypatch, db: TrackerDB):
+        """Even with a URL persisted on the alert, only the env value is used."""
+        monkeypatch.setenv("NOTIFY_URL", "env://target")
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(
+            Alert(route_id=route.id, alert_type=AlertType.DROP, notify_url="db://stored")
+        )
+        trigger = _make_trigger(alert_id=alert.id, route_id=route.id)
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = True
+
+        send_digest([trigger], db)
+
+        mock_ap.add.assert_called_once_with("env://target")
+
+
+class TestSecretObservabilityBoundaries:
+    """The credential crosses no persistence or observability boundary.
+
+    Sentinel bytes from NOTIFY_URL must be absent from the DB file, captured
+    stdout/stderr, and log records, on both delivery success and failure.
+    """
+
+    SECRET = "SENTINEL-c9f2-SECRET"
+    SENTINEL_URL = f"mailto://sentinel:{SECRET}@example.com"
+
+    @pytest.mark.parametrize("delivery_ok", [True, False])
+    @patch("fli.tracker.notifier.fetch_flight_details", return_value=[])
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_digest_flow_leaks_no_secret(
+        self,
+        mock_apprise_mod,
+        _mock_details,
+        delivery_ok,
+        monkeypatch,
+        tmp_path,
+        capsys,
+        caplog,
+    ):
+        monkeypatch.setenv("NOTIFY_URL", self.SENTINEL_URL)
+        db_path = tmp_path / "sentinel.db"
+        db = TrackerDB(db_path=db_path)
+        route = db.add_route(Route(origin="DFW", destination="FCO"))
+        alert = db.add_alert(Alert(route_id=route.id, alert_type=AlertType.DROP))
+        trigger = _make_trigger(alert_id=alert.id, route_id=route.id)
+
+        mock_ap = MagicMock()
+        mock_apprise_mod.Apprise.return_value = mock_ap
+        mock_ap.notify.return_value = delivery_ok
+
+        with caplog.at_level("DEBUG"):
+            send_digest([trigger], db)
+        db.close()
+
+        captured = capsys.readouterr()
+        assert self.SECRET not in captured.out
+        assert self.SECRET not in captured.err
+        assert self.SECRET not in caplog.text
+        assert self.SECRET.encode() not in db_path.read_bytes()
+
+    @patch("fli.tracker.notifier.apprise")
+    @patch("fli.tracker.notifier._HAS_APPRISE", True)
+    def test_config_error_message_carries_no_secret(
+        self, mock_apprise_mod, monkeypatch, db: TrackerDB
+    ):
+        """The fail-closed exception text names the variable, not a value."""
+        monkeypatch.delenv("NOTIFY_URL", raising=False)
+        with pytest.raises(NotificationConfigError) as exc_info:
+            send_digest([_make_trigger()], db)
+        assert "NOTIFY_URL is not configured" in str(exc_info.value)
 
 
 class TestIsDomesticRoute:

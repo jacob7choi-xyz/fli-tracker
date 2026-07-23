@@ -7,9 +7,25 @@ import typer
 
 from fli.tracker.db import TrackerDB
 from fli.tracker.detector import check_alerts
-from fli.tracker.notifier import send_digest
+from fli.tracker.notifier import NotificationConfigError, send_digest
 from fli.tracker.regions import RouteGroup, route_group
 from fli.tracker.scanner import scan_route
+
+logger = logging.getLogger(__name__)
+
+
+def _send_digest_contained(triggers, db) -> tuple[int, bool]:
+    """Send the digest without letting notification failure abort the sweep.
+
+    Collection and persistence happen before this point; a notification
+    configuration error must never cost collected data. Returns
+    (notifications_sent, notify_failed).
+    """
+    try:
+        return send_digest(triggers, db), False
+    except NotificationConfigError:
+        logger.error("Notification skipped: NOTIFY_URL is not configured")
+        return 0, True
 
 
 def watch(
@@ -70,8 +86,11 @@ def watch(
                 typer.echo(f"Stored {len(snapshots)} price snapshots")
 
                 if triggers:
-                    sent = send_digest(triggers, db)
+                    sent, notify_failed = _send_digest_contained(triggers, db)
                     typer.echo(f"Sent digest with {sent}/{len(triggers)} alerts")
+                    if notify_failed:
+                        typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
+                        raise typer.Exit(2)
                 else:
                     typer.echo("No alerts triggered")
             else:
@@ -115,13 +134,17 @@ def watch(
 
             # Send one digest for all triggers from the sweep
             total_sent = 0
+            notify_failed = False
             if all_triggers:
-                total_sent = send_digest(all_triggers, db)
+                total_sent, notify_failed = _send_digest_contained(all_triggers, db)
 
             typer.echo(
                 f"Sweep complete: {total_snapshots} snapshots, "
                 f"{len(all_triggers)} alerts triggered, "
                 f"{total_sent} notifications sent"
             )
+            if notify_failed:
+                typer.echo("Notification failed: NOTIFY_URL is not configured", err=True)
+                raise typer.Exit(2)
     finally:
         db.close()
