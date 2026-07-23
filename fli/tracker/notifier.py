@@ -24,6 +24,13 @@ from fli.tracker.models import AlertType, NotificationRecord, RouteStats
 
 logger = logging.getLogger(__name__)
 
+# Constant markers stored in notification_log.message. The column may never
+# carry rendered content: dedup reads only (alert_id, departure_date,
+# return_date, price), and persisting bodies caused the 2026-07 DB bloat
+# incident. Historical rows sanitized during remediation carry "legacy".
+MESSAGE_SINGLE = "single"
+MESSAGE_DIGEST = "digest"
+
 
 class NotificationConfigError(RuntimeError):
     """Raised when notification delivery is requested but NOTIFY_URL is not set.
@@ -673,14 +680,17 @@ def send_notification(trigger: AlertTrigger, db: TrackerDB) -> bool:
 
     success = ap.notify(body=message, title=title)
 
-    # Log regardless of success to prevent re-sending on transient failures
+    # Log regardless of success to prevent re-sending on transient failures.
+    # message is a constant marker: dedup reads only the structural columns,
+    # and storing rendered bodies is what bloated tracker.db past GitHub's
+    # 100 MiB push limit (2026-07 incident).
     db.log_notification(
         NotificationRecord(
             alert_id=trigger.alert.id,
             departure_date=trigger.snapshot.departure_date,
             return_date=trigger.snapshot.return_date,
             price=trigger.snapshot.price,
-            message=message,
+            message=MESSAGE_SINGLE,
         )
     )
 
@@ -974,7 +984,10 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
     ap.add(notify_url)
     success = ap.notify(body=body, title=title, body_format="html")
 
-    # Log each trigger for dedup regardless of delivery success
+    # Log each trigger for dedup regardless of delivery success.
+    # message is a constant marker: dedup reads only the structural columns,
+    # and storing the rendered digest HTML once per trigger is what bloated
+    # tracker.db past GitHub's 100 MiB push limit (2026-07 incident).
     for trigger in triggers:
         db.log_notification(
             NotificationRecord(
@@ -982,7 +995,7 @@ def send_digest(triggers: list[AlertTrigger], db: TrackerDB) -> int:
                 departure_date=trigger.snapshot.departure_date,
                 return_date=trigger.snapshot.return_date,
                 price=trigger.snapshot.price,
-                message=body,
+                message=MESSAGE_DIGEST,
             )
         )
 

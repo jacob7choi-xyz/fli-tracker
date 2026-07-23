@@ -678,6 +678,12 @@ class TestSendNotification:
 
         assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
 
+        # Storage contract: message is EXACTLY the constant marker. The column
+        # may never carry rendered content (2026-07 DB bloat incident).
+        rows = db._conn.execute("SELECT message FROM notification_log").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["message"] == "single"
+
     @patch("fli.tracker.notifier._HAS_APPRISE", False)
     def test_missing_apprise_returns_false(self, db: TrackerDB):
         """If apprise is not installed, send_notification returns False."""
@@ -968,6 +974,12 @@ class TestSendDigest:
         # Both triggers should be logged for dedup
         assert db.was_notification_sent(alert.id, "2026-07-15", 450.0, "2026-07-22") is True
         assert db.was_notification_sent(alert.id, "2026-07-20", 400.0, "2026-07-22") is True
+
+        # Storage contract: message is EXACTLY the constant marker. The column
+        # may never carry rendered content (2026-07 DB bloat incident).
+        rows = db._conn.execute("SELECT message FROM notification_log").fetchall()
+        assert len(rows) == 2
+        assert all(row["message"] == "digest" for row in rows)
 
     def test_empty_triggers_returns_zero(self, db: TrackerDB):
         assert send_digest([], db) == 0
