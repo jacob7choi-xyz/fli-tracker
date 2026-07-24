@@ -145,11 +145,19 @@ jobs:
                 exit 1
               fi
               if git fetch origin data; then
-                if git merge-base --is-ancestor FETCH_HEAD HEAD; then
-                  echo "Push attempt $attempt failed but remote has not advanced; retrying without rebase..."
-                else
-                  echo "Remote advanced; rebasing under guarded autostash..."
+                # merge-base --is-ancestor is three-valued: 0 = fetched tip
+                # is an ancestor of HEAD, 1 = it is not, other = the check
+                # itself errored. Only status 1 is verified advancement;
+                # an errored check is UNVERIFIABLE and must not rebase.
+                ANCESTRY=0
+                git merge-base --is-ancestor FETCH_HEAD HEAD || ANCESTRY=$?
+                if [ "$ANCESTRY" -eq 0 ]; then
+                  echo "Push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
+                elif [ "$ANCESTRY" -eq 1 ]; then
+                  echo "Fetched tip is not an ancestor of HEAD (remote advanced); rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
+                else
+                  echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
                 fi
               else
                 echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
@@ -223,11 +231,17 @@ jobs:
                 exit 1
               fi
               if git fetch origin data; then
-                if git merge-base --is-ancestor FETCH_HEAD HEAD; then
-                  echo "DB push attempt $attempt failed but remote has not advanced; retrying without rebase..."
-                else
-                  echo "Remote advanced; rebasing under guarded autostash..."
+                # Three-valued check; only status 1 (not an ancestor) is
+                # verified advancement. Errored checks are unverifiable.
+                ANCESTRY=0
+                git merge-base --is-ancestor FETCH_HEAD HEAD || ANCESTRY=$?
+                if [ "$ANCESTRY" -eq 0 ]; then
+                  echo "DB push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
+                elif [ "$ANCESTRY" -eq 1 ]; then
+                  echo "Fetched tip is not an ancestor of HEAD (remote advanced); rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
+                else
+                  echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
                 fi
               else
                 echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
