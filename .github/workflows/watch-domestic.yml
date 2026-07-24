@@ -120,6 +120,15 @@ jobs:
             echo "No archive changes to commit"
           else
             git commit -m "Archive domestic sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
+            # Invariant: the only intentionally dirty tracked file here is
+            # tracker.db (committed by the NEXT step). autostash is
+            # permissive, so assert nothing else rides along.
+            DIRTY=$(git status --porcelain)
+            if [ -n "$DIRTY" ] && [ "$DIRTY" != " M tracker.db" ]; then
+              echo "::error::Unexpected dirty worktree at archive push: ${DIRTY}"
+              exit 1
+            fi
+            DB_SHA_BEFORE=$(sha256sum tracker.db | cut -d' ' -f1)
             for attempt in 1 2 3; do
               git pull --rebase --autostash origin data && git push && break
               if [ $attempt -eq 3 ]; then
@@ -129,6 +138,14 @@ jobs:
               echo "Archive push attempt $attempt failed, retrying in $((attempt * 5))s..."
               sleep $((attempt * 5))
             done
+            # An autostash reapply conflict can leave the tree mangled while
+            # git pull still exits 0; the uncommitted DB snapshot must
+            # survive the round trip byte-identical or the run stops here.
+            DB_SHA_AFTER=$(sha256sum tracker.db | cut -d' ' -f1)
+            if [ "$DB_SHA_BEFORE" != "$DB_SHA_AFTER" ]; then
+              echo "::error::tracker.db changed across the autostash round trip (possible reapply conflict); refusing to proceed to DB publication"
+              exit 1
+            fi
           fi
 
       # tracker.db is non-authoritative operational state (Tier B). Its
