@@ -41,6 +41,11 @@ jobs:
         with:
           ref: data
           path: data
+          # Full history: the push-retry guard makes merge-base ancestry
+          # load-bearing, and shallow clones can misreport ancestry when
+          # the merge base falls outside the retained window. Measured
+          # cost ~300 MB pack; shrinks further after history cleanup.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -154,7 +159,7 @@ jobs:
                 if [ "$ANCESTRY" -eq 0 ]; then
                   echo "Push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
                 elif [ "$ANCESTRY" -eq 1 ]; then
-                  echo "Fetched tip is not an ancestor of HEAD (remote advanced); rebasing under guarded autostash..."
+                  echo "Fetched tip is not an ancestor of local HEAD; reconciliation required, rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
                 else
                   echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
@@ -238,7 +243,7 @@ jobs:
                 if [ "$ANCESTRY" -eq 0 ]; then
                   echo "DB push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
                 elif [ "$ANCESTRY" -eq 1 ]; then
-                  echo "Fetched tip is not an ancestor of HEAD (remote advanced); rebasing under guarded autostash..."
+                  echo "Fetched tip is not an ancestor of local HEAD; reconciliation required, rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
                 else
                   echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
