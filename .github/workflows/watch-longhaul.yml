@@ -121,7 +121,7 @@ jobs:
           else
             git commit -m "Archive longhaul sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
             for attempt in 1 2 3; do
-              git pull --rebase origin data && git push && break
+              git pull --rebase --autostash origin data && git push && break
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push archive to data branch after 3 attempts"
                 exit 1
@@ -170,7 +170,7 @@ jobs:
           else
             git commit -m "Update longhaul prices $(date -u +'%Y-%m-%d %H:%M UTC')"
             for attempt in 1 2 3; do
-              git pull --rebase origin data && git push && break
+              git pull --rebase --autostash origin data && git push && break
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push DB to data branch after 3 attempts"
                 exit 1
