@@ -41,11 +41,9 @@ jobs:
         with:
           ref: data
           path: data
-          # Full history: the push-retry guard makes merge-base ancestry
-          # load-bearing, and shallow clones can misreport ancestry when
-          # the merge base falls outside the retained window. Measured
-          # cost ~300 MB pack; shrinks further after history cleanup.
-          fetch-depth: 0
+          # Deliberately shallow: historical data-branch blobs carry
+          # pre-remediation credential residue, so runners fetch full
+          # history ONLY in the rare reconciliation path (see push loops).
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -124,6 +122,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No archive changes to commit"
           else
+            BASE_SHA=$(git rev-parse HEAD)
             git commit -m "Archive longhaul sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
             # State-machine proof around the autostash rebase. Exit codes
             # are NOT load-bearing (autostash-conflict exit behavior is not
@@ -136,36 +135,62 @@ jobs:
               exit 1
             fi
             DB_SHA_BEFORE=$(sha256sum tracker.db | cut -d' ' -f1)
-            # Push-first: writers are serialized by the concurrency group,
-            # so the remote almost never moves mid-run and the normal path
-            # touches no Tier-B state at all. A failed push does NOT imply
-            # the remote moved (network, auth, policy, lost response):
-            # Tier-B state is touched only on VERIFIED remote advancement;
-            # unverifiable states retry without rebasing. A failing rebase
-            # fails the step loudly via bash -e.
+            # Push-first with SHA-identity classification. Writers are
+            # serialized by the concurrency group, so the normal path is a
+            # plain push. On failure, three identity facts resolve almost
+            # everything with no history: remote==local means our push
+            # landed (response lost) and Tier A is proven durable;
+            # remote==starting-tip means the remote never moved and the
+            # failure was network/auth/policy - retry without touching
+            # anything. Only a remote differing from BOTH known states is
+            # real contention: only then is full history acquired (the
+            # shallow checkout omits credential-bearing historical blobs)
+            # and the three-valued ancestry guard consulted. Unverifiable
+            # states never rebase. A failing rebase fails loudly (bash -e).
             for attempt in 1 2 3; do
               git push && break
+              if ! git fetch origin data; then
+                if [ $attempt -eq 3 ]; then
+                  echo "::error::Failed to push archive to data branch after 3 attempts"
+                  exit 1
+                fi
+                echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
+                sleep $((attempt * 5))
+                continue
+              fi
+              REMOTE_SHA=$(git rev-parse FETCH_HEAD)
+              if [ "$REMOTE_SHA" = "$(git rev-parse HEAD)" ]; then
+                echo "Remote tip equals local HEAD: the push landed and the response was lost. Published."
+                break
+              fi
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push archive to data branch after 3 attempts"
                 exit 1
               fi
-              if git fetch origin data; then
-                # merge-base --is-ancestor is three-valued: 0 = fetched tip
-                # is an ancestor of HEAD, 1 = it is not, other = the check
-                # itself errored. Only status 1 is verified advancement;
-                # an errored check is UNVERIFIABLE and must not rebase.
+              if [ "$REMOTE_SHA" = "$BASE_SHA" ]; then
+                echo "Remote unmoved since this run started; push failed for another reason. Retrying as-is..."
+              else
+                echo "Remote differs from both the starting tip and local HEAD; acquiring history for guarded reconciliation..."
+                if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+                  if ! git fetch --unshallow origin data; then
+                    echo "::warning::Could not acquire full history; unverifiable, retrying without rebase..."
+                    sleep $((attempt * 5))
+                    continue
+                  fi
+                fi
+                # merge-base --is-ancestor is three-valued: 0 = ancestor,
+                # 1 = not an ancestor, other = the check itself errored.
+                # Only status 1 permits the guarded rebase.
                 ANCESTRY=0
                 git merge-base --is-ancestor FETCH_HEAD HEAD || ANCESTRY=$?
                 if [ "$ANCESTRY" -eq 0 ]; then
-                  echo "Push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
+                  echo "Fetched tip is already an ancestor of HEAD; retrying push..."
                 elif [ "$ANCESTRY" -eq 1 ]; then
                   echo "Fetched tip is not an ancestor of local HEAD; reconciliation required, rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
                 else
                   echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
                 fi
-              else
-                echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
               fi
               sleep $((attempt * 5))
             done
@@ -226,30 +251,52 @@ jobs:
           if git diff --cached --quiet; then
             echo "No DB changes to commit"
           else
+            BASE_SHA=$(git rev-parse HEAD)
             git commit -m "Update longhaul prices $(date -u +'%Y-%m-%d %H:%M UTC')"
-            # Same push-first, verified-advancement pattern; the tree is
+            # Same identity-first pattern as the archive push; the tree is
             # clean after the DB commit, so autostash is a no-op safety net.
             for attempt in 1 2 3; do
               git push && break
+              if ! git fetch origin data; then
+                if [ $attempt -eq 3 ]; then
+                  echo "::error::Failed to push DB to data branch after 3 attempts"
+                  exit 1
+                fi
+                echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
+                sleep $((attempt * 5))
+                continue
+              fi
+              REMOTE_SHA=$(git rev-parse FETCH_HEAD)
+              if [ "$REMOTE_SHA" = "$(git rev-parse HEAD)" ]; then
+                echo "Remote tip equals local HEAD: the push landed and the response was lost. Published."
+                break
+              fi
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push DB to data branch after 3 attempts"
                 exit 1
               fi
-              if git fetch origin data; then
-                # Three-valued check; only status 1 (not an ancestor) is
-                # verified advancement. Errored checks are unverifiable.
+              if [ "$REMOTE_SHA" = "$BASE_SHA" ]; then
+                echo "Remote unmoved since this run started; push failed for another reason. Retrying as-is..."
+              else
+                echo "Remote differs from both the starting tip and local HEAD; acquiring history for guarded reconciliation..."
+                if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+                  if ! git fetch --unshallow origin data; then
+                    echo "::warning::Could not acquire full history; unverifiable, retrying without rebase..."
+                    sleep $((attempt * 5))
+                    continue
+                  fi
+                fi
+                # Three-valued check; only status 1 permits the rebase.
                 ANCESTRY=0
                 git merge-base --is-ancestor FETCH_HEAD HEAD || ANCESTRY=$?
                 if [ "$ANCESTRY" -eq 0 ]; then
-                  echo "DB push attempt $attempt failed but fetched tip is already an ancestor of HEAD; retrying without rebase..."
+                  echo "Fetched tip is already an ancestor of HEAD; retrying push..."
                 elif [ "$ANCESTRY" -eq 1 ]; then
                   echo "Fetched tip is not an ancestor of local HEAD; reconciliation required, rebasing under guarded autostash..."
                   git rebase --autostash FETCH_HEAD
                 else
                   echo "::warning::Ancestry check errored (status=${ANCESTRY}); unverifiable, retrying without rebase..."
                 fi
-              else
-                echo "Fetch failed; cannot verify remote state, retrying push without rebase..."
               fi
               sleep $((attempt * 5))
             done
