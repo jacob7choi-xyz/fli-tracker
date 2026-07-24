@@ -120,12 +120,14 @@ jobs:
             echo "No archive changes to commit"
           else
             git commit -m "Archive longhaul sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
-            # Invariant: the only intentionally dirty tracked file here is
-            # tracker.db (committed by the NEXT step). autostash is
-            # permissive, so assert nothing else rides along.
-            DIRTY=$(git status --porcelain)
-            if [ -n "$DIRTY" ] && [ "$DIRTY" != " M tracker.db" ]; then
-              echo "::error::Unexpected dirty worktree at archive push: ${DIRTY}"
+            # State-machine proof around the autostash rebase. Exit codes
+            # are NOT load-bearing (autostash-conflict exit behavior is not
+            # reliably specified); these state assertions are.
+            # Precondition: the only tolerated dirty tracked file is
+            # tracker.db (committed by the NEXT step) - or a clean tree.
+            DIRTY_BEFORE=$(git status --porcelain)
+            if [ -n "$DIRTY_BEFORE" ] && [ "$DIRTY_BEFORE" != " M tracker.db" ]; then
+              echo "::error::Unexpected dirty worktree at archive push: ${DIRTY_BEFORE}"
               exit 1
             fi
             DB_SHA_BEFORE=$(sha256sum tracker.db | cut -d' ' -f1)
@@ -138,12 +140,22 @@ jobs:
               echo "Archive push attempt $attempt failed, retrying in $((attempt * 5))s..."
               sleep $((attempt * 5))
             done
-            # An autostash reapply conflict can leave the tree mangled while
-            # git pull still exits 0; the uncommitted DB snapshot must
-            # survive the round trip byte-identical or the run stops here.
+            # Postconditions: DB bytes identical, no unresolved merge
+            # state, and the worktree restored to EXACTLY its entry state
+            # (round-trip identity - also correct when the tree was clean).
             DB_SHA_AFTER=$(sha256sum tracker.db | cut -d' ' -f1)
             if [ "$DB_SHA_BEFORE" != "$DB_SHA_AFTER" ]; then
-              echo "::error::tracker.db changed across the autostash round trip (possible reapply conflict); refusing to proceed to DB publication"
+              echo "::error::tracker.db changed across the autostash round trip; refusing to proceed to DB publication"
+              exit 1
+            fi
+            if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "::error::Unmerged paths remain after archive rebase/autostash"
+              git status --porcelain
+              exit 1
+            fi
+            DIRTY_AFTER=$(git status --porcelain)
+            if [ "$DIRTY_AFTER" != "$DIRTY_BEFORE" ]; then
+              echo "::error::Worktree state not restored across autostash round trip: before=[${DIRTY_BEFORE}] after=[${DIRTY_AFTER}]"
               exit 1
             fi
           fi
