@@ -131,13 +131,19 @@ jobs:
               exit 1
             fi
             DB_SHA_BEFORE=$(sha256sum tracker.db | cut -d' ' -f1)
+            # Push-first: writers are serialized by the concurrency group,
+            # so the remote almost never moves mid-run and the normal path
+            # touches no Tier-B state at all. Rebase (autostashing the
+            # intentionally dirty tracker.db) only on rejection; a failing
+            # pull fails the step loudly via bash -e.
             for attempt in 1 2 3; do
-              git pull --rebase --autostash origin data && git push && break
+              git push && break
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push archive to data branch after 3 attempts"
                 exit 1
               fi
-              echo "Archive push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              echo "Archive push attempt $attempt rejected; rebasing onto remote, retrying in $((attempt * 5))s..."
+              git pull --rebase --autostash origin data
               sleep $((attempt * 5))
             done
             # Postconditions: DB bytes identical, no unresolved merge
@@ -198,13 +204,16 @@ jobs:
             echo "No DB changes to commit"
           else
             git commit -m "Update domestic prices $(date -u +'%Y-%m-%d %H:%M UTC')"
+            # Push-first here too; the tree is clean after the DB commit,
+            # so the rejection-path autostash is a no-op safety net.
             for attempt in 1 2 3; do
-              git pull --rebase --autostash origin data && git push && break
+              git push && break
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push DB to data branch after 3 attempts"
                 exit 1
               fi
-              echo "DB push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              echo "DB push attempt $attempt rejected; rebasing onto remote, retrying in $((attempt * 5))s..."
+              git pull --rebase --autostash origin data
               sleep $((attempt * 5))
             done
           fi
