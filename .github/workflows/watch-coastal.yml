@@ -41,6 +41,9 @@ jobs:
         with:
           ref: data
           path: data
+          # Deliberately shallow: historical data-branch blobs carry
+          # pre-remediation credential residue, and no code path fetches
+          # history. Remote divergence fails closed (see push loops).
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -119,14 +122,50 @@ jobs:
           if git diff --cached --quiet; then
             echo "No archive changes to commit"
           else
+            BASE_SHA=$(git rev-parse HEAD)
             git commit -m "Archive coastal sweep $(date -u +'%Y-%m-%d %H:%M UTC')"
+            # Two-phase staging contract: the only tolerated dirty tracked
+            # file here is tracker.db (committed by the NEXT step) - or a
+            # clean tree. Anything else means a staging bug upstream.
+            DIRTY=$(git status --porcelain)
+            if [ -n "$DIRTY" ] && [ "$DIRTY" != " M tracker.db" ]; then
+              echo "::error::Unexpected dirty worktree at archive push: ${DIRTY}"
+              exit 1
+            fi
+            # Push-first with identity-only classification. Writers are
+            # serialized by the shared concurrency group, so the remote
+            # CANNOT legitimately move during a run: remote == local HEAD
+            # means our push landed and the response was lost (publication
+            # proven durable); remote == starting tip means a transient
+            # failure (retry); anything else is a violated writer contract
+            # (manual push, foreign writer, history rewrite) and FAILS
+            # CLOSED - detection over silent reconciliation. No rebase, no
+            # autostash, no history acquisition exists on any path.
             for attempt in 1 2 3; do
-              git pull --rebase origin data && git push && break
+              git push && break
+              if ! git fetch origin data; then
+                if [ $attempt -eq 3 ]; then
+                  echo "::error::Failed to push archive to data branch after 3 attempts"
+                  exit 1
+                fi
+                echo "Fetch failed; cannot verify remote state, retrying push..."
+                sleep $((attempt * 5))
+                continue
+              fi
+              REMOTE_SHA=$(git rev-parse FETCH_HEAD)
+              if [ "$REMOTE_SHA" = "$(git rev-parse HEAD)" ]; then
+                echo "Remote tip equals local HEAD: the push landed and the response was lost. Published."
+                break
+              fi
+              if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
+                echo "::error::Unexpected remote mutation: data branch tip ${REMOTE_SHA} differs from both this run's starting tip ${BASE_SHA} and its local commit. The serialized-writer contract was violated; refusing automated reconciliation. Investigate before re-running."
+                exit 1
+              fi
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push archive to data branch after 3 attempts"
                 exit 1
               fi
-              echo "Archive push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              echo "Remote unmoved; transient push failure, retrying in $((attempt * 5))s..."
               sleep $((attempt * 5))
             done
           fi
@@ -168,14 +207,34 @@ jobs:
           if git diff --cached --quiet; then
             echo "No DB changes to commit"
           else
+            BASE_SHA=$(git rev-parse HEAD)
             git commit -m "Update coastal prices $(date -u +'%Y-%m-%d %H:%M UTC')"
+            # Same identity-only, fail-closed pattern as the archive push.
             for attempt in 1 2 3; do
-              git pull --rebase origin data && git push && break
+              git push && break
+              if ! git fetch origin data; then
+                if [ $attempt -eq 3 ]; then
+                  echo "::error::Failed to push DB to data branch after 3 attempts"
+                  exit 1
+                fi
+                echo "Fetch failed; cannot verify remote state, retrying push..."
+                sleep $((attempt * 5))
+                continue
+              fi
+              REMOTE_SHA=$(git rev-parse FETCH_HEAD)
+              if [ "$REMOTE_SHA" = "$(git rev-parse HEAD)" ]; then
+                echo "Remote tip equals local HEAD: the push landed and the response was lost. Published."
+                break
+              fi
+              if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
+                echo "::error::Unexpected remote mutation: data branch tip ${REMOTE_SHA} differs from both this run's starting tip ${BASE_SHA} and its local commit. The serialized-writer contract was violated; refusing automated reconciliation. Investigate before re-running."
+                exit 1
+              fi
               if [ $attempt -eq 3 ]; then
                 echo "::error::Failed to push DB to data branch after 3 attempts"
                 exit 1
               fi
-              echo "DB push attempt $attempt failed, retrying in $((attempt * 5))s..."
+              echo "Remote unmoved; transient push failure, retrying in $((attempt * 5))s..."
               sleep $((attempt * 5))
             done
           fi

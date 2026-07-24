@@ -57,6 +57,14 @@ mechanism provides.
   (derived: at the current 12 scheduled runs/day, filling the cap implies
   roughly 8 days of zero drainage) and remains an accepted
   platform-availability residual.
+- **Operator collision fails a sweep closed**: the data branch has one
+  serialized automated writer (the shared concurrency group); the push
+  loops classify failed pushes by SHA identity and treat a remote tip
+  differing from both the run's starting tip and its local commit as a
+  violated writer contract - red run, no automated reconciliation, that
+  sweep's observations lost (bounded to one sweep, visible). A manual
+  push during a live sweep window triggers this by design; re-dispatch
+  the sweep after investigating.
 - **Parse failure aborts the sweep**: a search response that returns but
   fails parsing stops the sweep loudly (unexpected upstream contract
   drift deserves visibility, not per-unit recovery). Already-collected
