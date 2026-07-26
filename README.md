@@ -1,17 +1,33 @@
-# 🛫 Fli - Flight Search MCP Server and Library
+# fli-tracker
 
-A powerful Python library that provides programmatic access to Google Flights data with an elegant CLI interface. Search
-flights, find the best deals, and filter results with ease.
+An autonomous flight-price collection system built on [`fli`](https://github.com/punitarani/fli),
+a library that reads Google Flights through its API rather than by scraping.
 
-> 🚀 **What makes `fli` special?**
-> Unlike other flight search libraries that rely on web scraping, Fli directly interacts with Google Flights' API
-> through reverse engineering.
-> This means:
->
-> * **Fast**: Direct API access means faster, more reliable results
-> * **Zero Scraping**: No HTML parsing, no browser automation, just pure API interaction
-> * **Reliable**: Less prone to breaking from UI changes
-> * **Modular**: Extensible architecture for easy customization and integration
+The tracker sweeps a set of routes every six hours, archives every price
+observation with provenance, scores fares against their own history, and emails
+a digest when something is genuinely cheap. It has been running since April
+2026.
+
+**[Postmortem: seven weeks of silent collection loss](docs/incidents/2026-07-silent-collection-loss.md)** (draft)
+
+In June 2026 this system kept sending deal alerts while quietly failing to save
+any data, losing roughly half of June and three quarters of July before anyone
+noticed. Most of the architecture here exists because of what that incident
+taught: failure domain separation, archive first publication, fail closed
+writes, per run provenance, and fault injection to prove the failure paths
+behave as designed.
+
+> **Relationship to upstream:** the search library, CLI, and MCP server are
+> [punitarani/fli](https://github.com/punitarani/fli). The price tracker
+> (`fli/tracker/`), its collection workflows, provenance tooling, and incident
+> documentation are additions in this repository.
+
+## Underlying library: fast, scraping-free flight search
+
+* **Fast**: direct API access instead of HTML parsing
+* **Zero scraping**: no browser automation
+* **Reliable**: less prone to breaking on UI changes
+* **Modular**: extensible architecture
 
 ## MCP Server
 
@@ -129,16 +145,52 @@ fli --help
 
 ## Price Tracker
 
-Fli includes a built-in price tracking system that monitors flight routes and alerts you when prices drop to deal-level thresholds.
+The tracker turns the search library into an autonomous data-collection system:
+it sweeps a set of routes every six hours, archives every observation with
+provenance, scores fares against their own price history, and emails a digest
+when something is genuinely cheap.
 
-### How It Works
+It has been collecting since April 2026. In June it broke silently and lost six
+weeks of data before anyone noticed.
+**[Read the postmortem.](docs/incidents/2026-07-silent-collection-loss.md)**
+Most of the architecture below exists because of what that incident taught.
 
-- **Track routes**: Define origin/destination pairs with flexible trip durations and per-route price caps
-- **Scheduled scans**: Automated sweeps every 6 hours via GitHub Actions (or local cron/launchd)
-- **Smart deal scoring**: Data-driven 0-100 scoring based on historical price distribution and seasonality (not static thresholds)
-- **Digest emails**: One HTML email per sweep with Domestic and International sections, flight details (airline, duration, stops, perks), city names, and Google Flights booking links
-- **Per-route price caps**: Region-aware max_price filtering (e.g., $120 domestic, $200 Mexico/Caribbean, $550 Europe, $750 Asia, $900 Oceania)
-- **SQLite storage**: Lightweight local database for price history with no external dependencies
+### Architecture
+
+Subsystems are classified by loss tolerance. Failure propagates upward in
+visibility but never in destructive authority: a lower tier failing may turn a
+run red, but may never block or destroy a higher tier.
+
+| Tier | Component | Loss tolerance |
+|---|---|---|
+| **A** | Archive shards (`archive/date=.../group=.../run=....csv.gz`) | Authoritative observations. Immutable, append-only, published first |
+| **B** | `tracker.db` | Operational state: routes, alerts, suppression history. Rebuildable inconvenience |
+| **C** | Notifications | Side effects. Never permitted to gate A or B |
+
+Properties that follow from that ordering:
+
+- **Archive first publication.** The shard and its provenance record are pushed
+  in their own transaction before the database is touched, so a database failure
+  cannot cost observations.
+- **Fail closed writes.** Push failures are classified by SHA identity rather
+  than exit code. Remote equal to local means the push landed and the response
+  was lost. Remote equal to the starting tip means a transient failure. Anything
+  else means the single writer contract was violated, and the run stops for a
+  human to investigate.
+- **Per attempt provenance.** Every run writes an immutable record with its
+  scheduled slot, sweep window, shard checksum, and an explicit
+  `collection_status`, derived by comparing expected against completed
+  collection units rather than reading the process exit code. The existence of a
+  shard never implies a complete observation window.
+- **Size gates.** A warning at 50 MiB; at 90 MiB the database snapshot is
+  refused while the archive stays durable and the run goes red.
+- **Runtime only credentials.** The notification URL is read from the
+  environment at send time and fails closed when absent. Nothing is persisted in
+  application state, displayed by the CLI, or written to logs, and tests assert
+  its absence from database bytes, stdout, stderr, logs, and exception text.
+- **Delivery truthful suppression.** Deduplication rows are written only after
+  confirmed delivery, so a failed send never records "already notified." The
+  governing bias is false duplicate over false suppression.
 
 ### Quick Start
 
@@ -146,11 +198,14 @@ Fli includes a built-in price tracking system that monitors flight routes and al
 # Install with tracker dependencies
 uv sync --extra tracker
 
+# Notification target is read from the environment, never stored
+export NOTIFY_URL="mailto://user:app_password@gmail.com?to=you@gmail.com"
+
 # Add a route with flexible durations and a price cap
 fli track add DFW FCO --cabin ECONOMY --durations "7,10,14" --max-price 550 --look-ahead 90
 
-# Add a price drop alert with email notification
-fli alert add 1 --drop --notify "mailto://user:app_password@gmail.com?to=you@gmail.com"
+# Alert when the price hits a new all-time low
+fli alert add 1 --drop
 
 # Run a manual sweep
 fli watch --verbose
@@ -166,35 +221,66 @@ fli history 1 --chart
 | `fli track add` | Add a route to monitor (supports `--durations`, `--max-price`) |
 | `fli track list` | List tracked routes with durations and price caps |
 | `fli track pause/resume` | Pause or resume a route |
+| `fli track snooze/unsnooze` | Silence a route for N days, with auto-wake |
 | `fli track remove` | Remove a route and its data |
-| `fli alert add` | Add a price alert (threshold or drop detection) |
+| `fli alert add` | Add a price alert (threshold or all-time-low detection) |
 | `fli alert list` | List configured alerts |
 | `fli alert remove` | Remove an alert |
-| `fli watch` | Run a single price sweep |
+| `fli watch` | Run a single price sweep (`--group` to scan a subset) |
 | `fli history` | View price history (table or ASCII chart) |
 
 ### Deal Scoring
 
-The deal scorer uses a composite 0-100 score based on real price data:
+A composite 0-100 score computed against each route's own price history, so
+"cheap" means cheap *for that route* rather than cheap in absolute terms:
 
-- **Route price value (0-65 pts)**: How far below the route's historical median, whether it matches or beats the all-time low, and proximity to the bottom of the price distribution
-- **Seasonality (0-35 pts)**: How the fare compares to the route's average for that month, with bonus credit for cheap fares in expensive seasons (summer, holidays)
-
-A confidence gate prevents misleading ratings: routes with fewer than 14 days of history or 10 snapshots show "Building history..." instead of a score.
+| Component | Points | What it measures |
+|---|---|---|
+| Z-score | 0-40 | Standard deviations below the route mean, normalized by that route's own volatility |
+| Percentile rank | 0-30 | Position in the route's empirical price distribution |
+| Lead time | 0-20 | Compared with the typical price for this booking window (0-7, 8-14, 15-30, 31-60 days out) |
+| Seasonality | 0-10 | Cheap fare during a peak travel month |
 
 | Score | Label |
 |-------|-------|
-| 80-100 | INSANE DEAL |
-| 60-79 | Great deal |
-| 40-59 | Good deal |
-| 20-39 | Decent |
-| 0-19 | Fair price |
+| 80-100 | BUY NOW |
+| 60-79 | Strong buy |
+| 40-59 | Worth watching |
+| 20-39 | Meh |
+| 0-19 | Skip |
 
-### Automated Scanning
+A confidence gate prevents misleading ratings: routes with fewer than 14 days of
+history or 10 snapshots show "Building history..." instead of a score.
 
-The included GitHub Actions workflow (`.github/workflows/watch.yml`) runs sweeps every 6 hours. Price data is persisted on a dedicated `data` branch. See the workflow file for setup details.
+> **Honest caveat:** the component weights are hand picked rather than learned.
+> Validating them requires labeled outcomes, meaning a record of which fares were
+> actually booked, and that dataset does not exist yet. The features are sound
+> inputs for an eventual model. The weights on top are judgment.
 
-For local scheduling, a launchd plist is available at `~/Library/LaunchAgents/com.fli.watch.plist` (macOS).
+### Automated Collection
+
+Three GitHub Actions workflows sweep on a staggered six-hour schedule, sharing a
+concurrency group so only one writer touches the data branch at a time:
+
+| Workflow | Routes | Schedule (UTC) |
+|---|---|---|
+| `watch-domestic.yml` | US, Caribbean, Mexico, Central America, Canada | 00/06/12/18 |
+| `watch-longhaul.yml` | Europe, Asia, South America, everything else | 01/07/13/19 |
+| `watch-coastal.yml` | Major US coastal metros | 02/08/14/20 |
+
+Observations are persisted to a dedicated `data` branch:
+
+```
+archive/date=2026-07-25/group=domestic/run=2026-07-25T12-55-31Z.csv.gz   # Tier A
+runs/30094859362-1.json                                                  # provenance
+coverage.csv                                                             # per-slot completeness
+tracker.db                                                               # Tier B
+```
+
+`coverage.csv` records every scheduled slot as `complete`, `partial`,
+`pre-manifest`, `missing`, or `backfill`, so downstream analysis can weight
+windows by trustworthiness instead of assuming uniform quality, including across
+the June and July gap.
 
 ---
 
@@ -428,8 +514,8 @@ Each example is self-contained and includes automatic dependency checking with h
 
 ```bash
 # Clone the repository
-git clone https://github.com/punitarani/fli.git
-cd fli
+git clone git@github.com:jacob7choi-xyz/fli-tracker.git
+cd fli-tracker
 
 # Install dependencies with uv
 uv sync --all-extras
@@ -472,7 +558,7 @@ To run GitHub Actions locally, install [act](https://github.com/nektos/act):
 ```bash
 brew install act
 
-# Run CI locally (lint + tests on Python 3.10-3.13)
+# Run CI locally (lint + deterministic tests on Python 3.12)
 make ci
 
 # Or run CI inside Docker (no local act installation needed)
@@ -485,4 +571,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License — see the LICENSE file for details.
+This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) for details.
