@@ -8,7 +8,7 @@ observation with provenance, scores fares against their own history, and emails
 a digest when something is genuinely cheap. It has been running since April
 2026.
 
-**[Postmortem: seven weeks of silent collection loss](docs/incidents/2026-07-silent-collection-loss.md)** (draft)
+**[Postmortem: seven weeks of silent collection loss](docs/incidents/2026-07-silent-collection-loss.md)**
 
 In June 2026 this system kept sending deal alerts while quietly failing to save
 any data, losing roughly half of June and three quarters of July before anyone
