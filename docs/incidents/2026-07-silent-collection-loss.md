@@ -2,7 +2,7 @@
 
 **Status:** Resolved 2026-07-25
 **Impact:** About 55% of June and 76% of July price observations permanently lost
-**Detection:** 51 days after the first failure, by manual inspection rather than alerting
+**Detection:** 51 days after the first failure, during manual inspection. Failure emails were delivered throughout and ignored
 **Author:** Jacob Choi
 **Document status:** Draft. Sections 4 and 7 are not yet written.
 
@@ -22,8 +22,9 @@ it, and it grew to 100.6 MB of a 104.7 MB file. GitHub rejects any file over
 committed together, so each refused push destroyed that sweep's observations
 along with it, and the runner holding them was destroyed minutes later.
 
-No alerting existed for workflow failure. I found the problem only when I
-inspected the repository by hand, 51 days later.
+Failure notifications did exist. GitHub emails the owner of a scheduled workflow
+when a run fails, and it did so every time. I received them and stopped reading
+them. See section 4.
 
 ## 2. Timeline
 
@@ -59,8 +60,9 @@ archive shard as well. These two artifacts have very different loss tolerance.
 The archive is irreplaceable observation data and the database is rebuildable
 operational state, but the pipeline treated them as one unit.
 
-An aggravating factor: the workflows had no failure notification, and GitHub's
-own emails for scheduled workflow failures were not reaching a monitored inbox.
+An aggravating factor, and the reason this lasted seven weeks rather than a day,
+was that the failure signal reached me and I ignored it. That is covered in
+section 4.
 
 ## 4. Why it went undetected for seven weeks
 
