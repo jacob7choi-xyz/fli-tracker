@@ -154,6 +154,7 @@ def complex_round_trip_params():
         "complex_search_params",
     ],
 )
+@pytest.mark.live_api
 def test_search_functionality(search, search_params_fixture, request):
     """Test date search functionality with different data sets."""
     search_params = request.getfixturevalue(search_params_fixture)
@@ -161,6 +162,7 @@ def test_search_functionality(search, search_params_fixture, request):
     assert isinstance(results, list)
 
 
+@pytest.mark.live_api
 def test_multiple_searches(search, basic_search_params, complex_search_params):
     """Test performing multiple searches with the same SearchDates instance."""
     # First search
@@ -176,6 +178,7 @@ def test_multiple_searches(search, basic_search_params, complex_search_params):
     assert isinstance(results3, list)
 
 
+@pytest.mark.live_api
 def test_date_price_sorting(search, basic_search_params):
     """Test that date prices are sorted chronologically."""
     results = search.search(basic_search_params)
@@ -204,6 +207,7 @@ def test_parse_price_from_calendar_item():
     assert SearchDates._SearchDates__parse_price(CALENDAR_ITEM) == 118.0
 
 
+@pytest.mark.live_api
 def test_basic_round_trip_search(search, round_trip_search_params):
     """Test basic round trip date search functionality."""
     results = search.search(round_trip_search_params)
@@ -223,6 +227,7 @@ def test_basic_round_trip_search(search, round_trip_search_params):
         assert result.price > 0
 
 
+@pytest.mark.live_api
 def test_complex_round_trip_search(search, complex_round_trip_params):
     """Test complex round trip date search with multiple passengers and stops."""
     results = search.search(complex_round_trip_params)
@@ -249,6 +254,7 @@ def test_complex_round_trip_search(search, complex_round_trip_params):
         "complex_round_trip_params",
     ],
 )
+@pytest.mark.live_api
 def test_round_trip_result_structure(search, search_params_fixture, request):
     """Test the structure of round trip date search results with different parameters."""
     search_params = request.getfixturevalue(search_params_fixture)

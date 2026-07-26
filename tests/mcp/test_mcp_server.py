@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from fli.mcp.server import (
     DateSearchParams,
     FlightSearchParams,
@@ -22,6 +24,7 @@ def get_future_date(days: int = 30) -> str:
 class TestMCPServer:
     """Test suite for MCP server tools."""
 
+    @pytest.mark.live_api
     def test_search_flights_one_way(self):
         """Test one-way flight search."""
         params = FlightSearchParams(
@@ -45,6 +48,7 @@ class TestMCPServer:
             assert "count" in result
             assert isinstance(result["flights"], list)
 
+    @pytest.mark.live_api
     def test_search_flights_round_trip(self):
         """Test round-trip flight search."""
         params = FlightSearchParams(
@@ -71,6 +75,7 @@ class TestMCPServer:
             assert "count" in result
             assert isinstance(result["flights"], list)
 
+    @pytest.mark.live_api
     def test_search_dates_one_way(self):
         """Test one-way date search."""
         start_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
@@ -100,6 +105,7 @@ class TestMCPServer:
             assert "date_range" in result
             assert isinstance(result["dates"], list)
 
+    @pytest.mark.live_api
     def test_search_dates_round_trip(self):
         """Test round-trip date search."""
         start_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
@@ -133,6 +139,7 @@ class TestMCPServer:
             assert result["duration"] == 7
             assert isinstance(result["dates"], list)
 
+    @pytest.mark.live_api
     def test_invalid_airport_code(self):
         """Test error handling for invalid airport code."""
         params = FlightSearchParams(
@@ -147,6 +154,7 @@ class TestMCPServer:
         assert "Invalid airport code" in result["error"]
         assert result["flights"] == []
 
+    @pytest.mark.live_api
     def test_invalid_departure_window(self):
         """Test error handling for invalid departure window."""
         params = FlightSearchParams(
@@ -164,6 +172,7 @@ class TestMCPServer:
         assert "time range" in result["error"].lower()
         assert result["flights"] == []
 
+    @pytest.mark.live_api
     def test_invalid_cabin_class(self):
         """Test error handling for invalid cabin class."""
         params = FlightSearchParams(
@@ -181,6 +190,7 @@ class TestMCPServer:
         assert "cabin_class" in result["error"].lower()
         assert result["flights"] == []
 
+    @pytest.mark.live_api
     def test_invalid_max_stops(self):
         """Test error handling for invalid max stops."""
         params = FlightSearchParams(
@@ -198,6 +208,7 @@ class TestMCPServer:
         assert "max_stops" in result["error"].lower()
         assert result["flights"] == []
 
+    @pytest.mark.live_api
     def test_invalid_airline_code(self):
         """Test error handling for invalid airline code."""
         params = FlightSearchParams(

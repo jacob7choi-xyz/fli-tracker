@@ -160,6 +160,7 @@ def complex_round_trip_params():
         "complex_search_params",
     ],
 )
+@pytest.mark.live_api
 def test_search_functionality(search, search_params_fixture, request):
     """Test flight search functionality with different data sets."""
     search_params = request.getfixturevalue(search_params_fixture)
@@ -167,6 +168,7 @@ def test_search_functionality(search, search_params_fixture, request):
     assert isinstance(results, list)
 
 
+@pytest.mark.live_api
 def test_multiple_searches(search, basic_search_params, complex_search_params):
     """Test performing multiple searches with the same Search instance."""
     # First search
