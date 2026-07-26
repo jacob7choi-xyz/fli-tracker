@@ -64,7 +64,10 @@ jobs:
       # deterministic tests that happened to sit beside live ones.
       # strict-markers (pyproject.toml) makes a typo'd marker a collection
       # error, so a live test cannot rejoin this gate by misspelling.
-      # Run the excluded set manually:  uv run pytest -m live_api
+      # Run the excluded set manually. --all is required because
+      # conftest drops fuzz-marked tests without it, and the fuzz
+      # search is both fuzz and live_api:
+      #   uv run pytest -m live_api --all
       - name: Run tests
         run: uv run pytest tests/ -m "not live_api" -q
         env:
