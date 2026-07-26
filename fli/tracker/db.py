@@ -425,21 +425,25 @@ class TrackerDB:
         # Lead-time bucket averages (days before departure at scan time)
         lt_rows = self._conn.execute(
             """
+            WITH lead AS (
+                SELECT
+                    CAST(
+                        julianday(departure_date) - julianday(date(scanned_at)) AS INT
+                    ) AS lead_days,
+                    price
+                FROM price_snapshots
+                WHERE route_id = ? AND departure_date > date(scanned_at)
+            )
             SELECT
                 CASE
-                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 0 AND 7
-                        THEN '0-7'
-                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 8 AND 14
-                        THEN '8-14'
-                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 15 AND 30
-                        THEN '15-30'
-                    WHEN CAST(julianday(departure_date) - julianday(date(scanned_at)) AS INT) BETWEEN 31 AND 60
-                        THEN '31-60'
+                    WHEN lead_days BETWEEN 0 AND 7 THEN '0-7'
+                    WHEN lead_days BETWEEN 8 AND 14 THEN '8-14'
+                    WHEN lead_days BETWEEN 15 AND 30 THEN '15-30'
+                    WHEN lead_days BETWEEN 31 AND 60 THEN '31-60'
                     ELSE NULL
                 END AS bucket,
                 AVG(price) AS avg_p
-            FROM price_snapshots
-            WHERE route_id = ? AND departure_date > date(scanned_at)
+            FROM lead
             GROUP BY bucket
             HAVING bucket IS NOT NULL
             """,

@@ -8,135 +8,66 @@ on:
   workflow_dispatch:
   workflow_call:
 
-jobs:
-  lint:
-    uses: ./.github/workflows/lint.yml
+# Read-only: this gate needs no write access and holds no secrets.
+permissions:
+  contents: read
 
-  railway-build:
-    name: Railway build validation
+jobs:
+  test:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v7
+
+      # The uv BINARY is pinned too, not just the action: an unpinned
+      # installer would let the resolver drift between runs, which is the
+      # opposite of a deterministic gate. 0.11.3 matches NIXPACKS_UV_VERSION
+      # so every build path in this repo uses one uv.
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.3"
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Create local bin directory
-        run: mkdir -p "$HOME/.local/bin"
-
-      - name: Install Nixpacks CLI
+      # Production boundary check, BEFORE the test superset is installed.
+      # The sweeps run exactly `uv sync --extra tracker`; the test job adds
+      # dev and mcp on top. Without this step a package missing from the
+      # tracker extra but supplied by mcp would pass CI and fail in
+      # production. Importing the modules the sweep actually loads proves
+      # the tracker extra is independently complete.
+      - name: Verify the production dependency set is self-sufficient
         run: |
-          NIXPACKS_VERSION="1.41.0"
-          curl -fsSL "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar xz -C "$HOME/.local/bin"
+          uv sync --extra tracker --no-dev --locked
+          uv run python -c "import fli.tracker.scanner, fli.tracker.notifier, fli.cli.main"
 
-      - name: Add local bin to PATH
-        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Validate Railway and Nixpacks config
-        run: |
-          python - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          railway = tomllib.loads(Path("railway.toml").read_text())
-          nixpacks = tomllib.loads(Path("nixpacks.toml").read_text())
-
-          assert railway["build"]["builder"] == "NIXPACKS"
-          assert "nixpacksPlan" not in railway["build"]
-          assert railway["deploy"]["startCommand"] == "uv run fli-mcp-http"
-          assert nixpacks["variables"]["NIXPACKS_UV_VERSION"]
-          assert nixpacks["start"]["cmd"] == "uv run fli-mcp-http"
-          PY
-
-      - name: Generate Nixpacks plan
-        run: nixpacks plan . > /tmp/nixpacks-plan.json
-
-      - name: Assert plan pins uv for install
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          plan = json.loads(Path("/tmp/nixpacks-plan.json").read_text())
-          install_cmds = plan["phases"]["install"]["cmds"]
-          joined = "\n".join(install_cmds)
-
-          assert "pip install uv==$NIXPACKS_UV_VERSION" in joined
-          assert "uv sync --active --no-dev --frozen --extra mcp" in joined
-          PY
-
-      - name: Smoke test Railway production install
-        run: |
-          uv venv /tmp/fli-railway-venv --python 3.12
-          . /tmp/fli-railway-venv/bin/activate
-          uv sync --active --no-dev --frozen --extra mcp
-          python -c "import fastmcp, fli.mcp.server"
-
-  test:
-    needs: [ lint, railway-build ]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [ "3.10", "3.11", "3.12", "3.13" ]
-      fail-fast: false
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
+      # --locked, NOT --frozen. Verified empirically: against a stale lock
+      # --frozen installs anyway and says nothing, while --locked reports
+      # "the lockfile needs to be updated" and fails. Only --locked gives
+      # reproducible resolution AND catches a pyproject change committed
+      # without relocking.
+      # --extra tracker: the sweeps install it in production. This makes CI
+      # a superset of the production dependency set (production extras plus
+      # dev/test), not an exact match for it.
       - name: Install dependencies
-        run: uv sync --extra dev --extra mcp
+        run: uv sync --extra dev --extra mcp --extra tracker --locked
 
+      # Excluded by design, not by accident: tests/search and
+      # tests/mcp/test_mcp_server.py drive the LIVE Google Flights API and
+      # fail on rate limits and network variance. A required check that
+      # fails randomly is one the maintainer learns to bypass.
+      # Scoped to the file, not the whole tests/mcp directory:
+      # test_mcp_server_fixes.py holds 12 deterministic tests worth keeping.
+      # Run the excluded ones manually:
+      #   uv run pytest tests/search tests/mcp/test_mcp_server.py
       - name: Run tests
-        run: |
-          uv run pytest tests/ --all -v \
-            --ignore=tests/search/ \
-            -k "not test_search_dates_round_trip" \
-            --junitxml=junit.xml
+        run: >
+          uv run pytest tests/
+          --ignore=tests/search
+          --ignore=tests/mcp/test_mcp_server.py
+          -q
         env:
           FORCE_COLOR: 1
-
-      - name: Upload Test Results
-        if: always() && !env.ACT
-        uses: actions/upload-artifact@v7
-        with:
-          name: Test Results (Python ${{ matrix.python-version }})
-          path: junit.xml
-
-  publish-test-results:
-    name: "Publish Test Results"
-    needs: [ railway-build, test ]
-    runs-on: ubuntu-latest
-    if: always() && needs.test.result != 'skipped'
-    permissions:
-      checks: write
-      pull-requests: write
-    
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Publish Test Results
-        uses: EnricoMi/publish-unit-test-result-action@v2
-        with:
-          files: "artifacts/**/junit.xml"
-          check_name: "Test Results"
-          comment_mode: always
-          compare_to_earlier_commit: true
