@@ -15,16 +15,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The uv BINARY is pinned too, not just the action: an unpinned
+      # installer would let the resolver drift between runs, which is the
+      # opposite of a deterministic gate. 0.11.3 matches NIXPACKS_UV_VERSION
+      # so every build path in this repo uses one uv.
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.3"
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
+      # --frozen: install exactly what uv.lock says and fail if the lock is
+      # stale, so dependencies cannot resolve differently between runs and a
+      # pyproject change without a relocked file is caught here.
+      # --extra tracker: the sweeps install it in production, so the gate
+      # tests the dependency set that actually runs.
       - name: Install dependencies
-        run: uv sync --extra dev --extra mcp
+        run: uv sync --extra dev --extra mcp --extra tracker --frozen
 
       # Deterministic tests only. tests/search and tests/mcp drive the live
       # Google Flights API: they fail on rate limits and network variance,
