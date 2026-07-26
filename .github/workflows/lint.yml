@@ -8,6 +8,10 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# Read-only: this gate needs no write access and holds no secrets.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -29,7 +33,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --extra dev --frozen
+        run: uv sync --extra dev --locked
 
       - name: Check formatting
         run: uv run ruff format . --check

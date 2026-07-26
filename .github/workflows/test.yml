@@ -8,6 +8,10 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# Read-only: this gate needs no write access and holds no secrets.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,21 +33,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      # --frozen: install exactly what uv.lock says and fail if the lock is
-      # stale, so dependencies cannot resolve differently between runs and a
-      # pyproject change without a relocked file is caught here.
-      # --extra tracker: the sweeps install it in production, so the gate
-      # tests the dependency set that actually runs.
+      # --locked, NOT --frozen. Verified empirically: against a stale lock
+      # --frozen installs anyway and says nothing, while --locked reports
+      # "the lockfile needs to be updated" and fails. Only --locked gives
+      # reproducible resolution AND catches a pyproject change committed
+      # without relocking.
+      # --extra tracker: the sweeps install it in production. This makes CI
+      # a superset of the production dependency set (production extras plus
+      # dev/test), not an exact match for it.
       - name: Install dependencies
-        run: uv sync --extra dev --extra mcp --extra tracker --frozen
+        run: uv sync --extra dev --extra mcp --extra tracker --locked
 
-      # Deterministic tests only. tests/search and tests/mcp drive the live
-      # Google Flights API: they fail on rate limits and network variance,
-      # which would make this gate flaky. A required check that fails
-      # randomly is one the maintainer learns to bypass, so it is excluded
-      # by design rather than by accident. Run those manually:
-      #   uv run pytest tests/search tests/mcp
+      # Excluded by design, not by accident: tests/search and
+      # tests/mcp/test_mcp_server.py drive the LIVE Google Flights API and
+      # fail on rate limits and network variance. A required check that
+      # fails randomly is one the maintainer learns to bypass.
+      # Scoped to the file, not the whole tests/mcp directory:
+      # test_mcp_server_fixes.py holds 12 deterministic tests worth keeping.
+      # Run the excluded ones manually:
+      #   uv run pytest tests/search tests/mcp/test_mcp_server.py
       - name: Run tests
-        run: uv run pytest tests/ --ignore=tests/search --ignore=tests/mcp -q
+        run: >
+          uv run pytest tests/
+          --ignore=tests/search
+          --ignore=tests/mcp/test_mcp_server.py
+          -q
         env:
           FORCE_COLOR: 1
