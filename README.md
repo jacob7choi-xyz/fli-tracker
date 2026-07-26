@@ -8,7 +8,7 @@ observation with provenance, scores fares against their own history, and emails
 a digest when something is genuinely cheap. It has been running since April
 2026.
 
-**[Postmortem: seven weeks of silent collection loss](docs/incidents/2026-07-silent-collection-loss.md)**
+**[Postmortem: seven weeks of silent collection loss](docs/incidents/2026-07-silent-collection-loss.md)** (draft)
 
 In June 2026 this system kept sending deal alerts while quietly failing to save
 any data, losing roughly half of June and three quarters of July before anyone
@@ -515,7 +515,7 @@ Each example is self-contained and includes automatic dependency checking with h
 ```bash
 # Clone the repository
 git clone git@github.com:jacob7choi-xyz/fli-tracker.git
-cd fli
+cd fli-tracker
 
 # Install dependencies with uv
 uv sync --all-extras
@@ -571,4 +571,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) for details.

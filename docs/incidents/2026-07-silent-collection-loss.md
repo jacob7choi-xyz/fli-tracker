@@ -4,12 +4,7 @@
 **Impact:** About 55% of June and 76% of July price observations permanently lost
 **Detection:** 51 days after the first failure, by manual inspection rather than alerting
 **Author:** Jacob Choi
-
-> **Note to self: sections 4 and 7 are yours to write.** Everything else here is
-> factual scaffolding, so timeline, numbers, SHAs, and mechanisms. Section 4 on
-> why it went undetected and section 7 on lessons are where judgment shows, and
-> they are the two sections a reader weighs most. Write them in your own voice,
-> then delete this note.
+**Document status:** Draft. Sections 4 and 7 are not yet written.
 
 ## 1. Summary
 
@@ -69,21 +64,7 @@ own emails for scheduled workflow failures were not reaching a monitored inbox.
 
 ## 4. Why it went undetected for seven weeks
 
-> *Your section.* Prompts, not text to keep:
->
-> Every observable signal stayed healthy. Deal emails arrived on schedule
-> because notification happened before persistence, so the system's most visible
-> output was the least coupled to the thing that broke.
->
-> What I was actually monitoring was "am I receiving alerts," which is a proxy
-> for "is the pipeline healthy." The proxy stayed true after the real thing
-> became false.
->
-> The red run badges existed on GitHub the entire time. Nothing pushed them to
-> me and I had no reason to go looking.
->
-> Worth considering: what is the difference between monitoring and
-> observability, and which one did this system actually lack?
+*Not yet written.*
 
 ## 5. What changed
 
@@ -188,31 +169,4 @@ impossible.
 
 ## 7. Lessons
 
-> *Your section.* Candidates below. Pick the ones you actually believe and cut
-> the rest, because a short list you mean beats a long list you don't.
->
-> Silent failure is worse than loud failure. This system failed in the worst
-> possible direction, continuing to produce its most visible output while losing
-> its most valuable one.
->
-> Do not couple artifacts with different loss tolerances. One transaction
-> covering an irreplaceable archive and a rebuildable cache meant the cheap thing
-> could destroy the expensive thing.
->
-> A metric that only moves on success is not monitoring. Emails arriving proved
-> notification worked and proved nothing about persistence.
->
-> Exit codes are not evidence about remote state. A failed push does not mean the
-> remote is unchanged. I made this mistake twice, once in the original pipeline
-> and again in the recovery script written to fix it.
->
-> Configured is not exercised. Every safety property here was only believed until
-> it was deliberately broken in production.
->
-> Claims outrun implementations. Across this incident, review caught 19 cases
-> where a description asserted more than the code delivered, including a flag
-> documented as doing the opposite of its actual behavior, a test count cited as
-> coverage for tests that asserted nothing relevant, and "purged" used where
-> "unreachable" was true. The durable fix was procedural: classify each claim as
-> fact, inference, or hypothesis, name the mechanism that would make it true, and
-> measure it when measurement is cheap, which it almost always is.
+*Not yet written.*
