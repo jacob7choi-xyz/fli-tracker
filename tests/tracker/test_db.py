@@ -830,3 +830,8 @@ class TestNotificationLog:
         )
         db.remove_alert(alert.id)
         assert db.was_notification_sent(alert.id, "2026-07-15", 487.0) is False
+
+
+def test_deliberately_failing_gate_proof():
+    """Temporary: proves branch protection blocks a red PR. Deleted after."""
+    assert 1 == 2, "intentional failure to verify the merge gate"
