@@ -4,7 +4,6 @@
 **Impact:** About 55% of June and 76% of July price observations permanently lost
 **Detection:** 51 days after the first failure, during manual inspection. Failure emails were delivered throughout and ignored
 **Author:** Jacob Choi
-**Document status:** Draft. Sections 4 and 7 are not yet written.
 
 ## 1. Summary
 
@@ -66,7 +65,44 @@ section 4.
 
 ## 4. Why it went undetected for seven weeks
 
-*Not yet written.*
+The alerts worked. I ignored them.
+
+GitHub emails you when a scheduled workflow fails, and it did, every time. I was
+receiving failure notifications for weeks. At some point I remember noticing that
+the failures had become constant rather than occasional, and I did nothing about
+it.
+
+The reason is unflattering but simple: I was not paying attention to this
+project. It had been running unattended for months, and unattended was exactly
+what I wanted from it. The deal emails kept arriving on schedule, so the part of
+the system I actually interacted with looked healthy. The failure emails arrived
+in the same inbox, alongside them, and turned into background noise.
+
+That is the real finding. The signal was not missing. It was delivered,
+repeatedly, and I had stopped reading it. A notification that arrives constantly
+stops being a notification and becomes weather.
+
+I did not open the repository at all during those seven weeks. There was no
+reason to. Nothing in my daily experience of the system suggested anything was
+wrong, and the one channel that was telling me the truth had already been filed
+away as normal.
+
+### What this means for the fix
+
+The remediation added a failure email. It goes to the same inbox, in the same
+format, as the deal emails I already read past.
+
+I considered routing failures to a separate channel, such as a phone push
+notification, where I have no habituation. I decided against it. This is a
+personal flight tracker, a repeat of the detection failure costs me price data I
+can live without, and I would rather record the risk honestly than add
+infrastructure I might not maintain.
+
+So the detection failure is not fixed. It is accepted. What did change is that
+failures are now much cheaper: the archive publishes before the database, so a
+repeat of this exact fault costs one red badge instead of a sweep, and the
+coverage record would show me precisely what was lost. The blast radius shrank
+even though my attention did not improve.
 
 ## 5. What changed
 
@@ -171,4 +207,23 @@ impossible.
 
 ## 7. Lessons
 
-*Not yet written.*
+**An alert you have stopped reading is not an alert.** I did not lack a signal. I
+had one, delivered by email, every time a run failed, for seven weeks. Volume
+turned it into noise and I filed it under normal. When I think about monitoring
+now, the question I ask is not "will this system tell me," it is "will I still be
+listening in six months."
+
+**Failure should be expensive for the system, not for the data.** The pipeline
+failed in the worst available direction. It kept producing its most visible
+output, the deal emails, while losing its most valuable one, the observations.
+Anything I care about should now be persisted before anything I merely enjoy.
+
+**Do not put artifacts with different loss tolerances in the same transaction.**
+One commit held an irreplaceable archive and a rebuildable cache, so the cheap
+thing was able to destroy the expensive thing. Separating them was the single
+highest value change in the entire remediation.
+
+**Configured is not exercised.** Every safety property described in section 5 was
+only a belief until I deliberately broke it in production and watched what
+happened. Two of them behaved differently than I expected. I do not think I would
+trust any of this if I had only reasoned about it.
