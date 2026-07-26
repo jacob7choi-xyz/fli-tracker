@@ -33,6 +33,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Production boundary check, BEFORE the test superset is installed.
+      # The sweeps run exactly `uv sync --extra tracker`; the test job adds
+      # dev and mcp on top. Without this step a package missing from the
+      # tracker extra but supplied by mcp would pass CI and fail in
+      # production. Importing the modules the sweep actually loads proves
+      # the tracker extra is independently complete.
+      - name: Verify the production dependency set is self-sufficient
+        run: |
+          uv sync --extra tracker --no-dev --locked
+          uv run python -c "import fli.tracker.scanner, fli.tracker.notifier, fli.cli.main"
+
       # --locked, NOT --frozen. Verified empirically: against a stale lock
       # --frozen installs anyway and says nothing, while --locked reports
       # "the lockfile needs to be updated" and fails. Only --locked gives

@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -517,6 +518,94 @@ class TestRouteStats:
         assert route.durations == [14]
         assert route.trip_duration == 14
         db.close()
+
+
+class TestLeadTimeBuckets:
+    """Boundary coverage for the lead-time bucketing in get_route_stats.
+
+    The bucket edges are the contract: a snapshot scanned N days before
+    departure must land in exactly one bucket, and anything beyond 60 days
+    or already departed must be excluded entirely. These assert the SQL
+    itself, which the other RouteStats tests never touch.
+    """
+
+    @pytest.mark.parametrize(
+        ("lead_days", "expected_bucket"),
+        [
+            # Same-day departures are excluded: the query filters
+            # departure_date > date(scanned_at), strictly greater.
+            (0, None),
+            (1, "0-7"),
+            (7, "0-7"),
+            (8, "8-14"),
+            (14, "8-14"),
+            (15, "15-30"),
+            (30, "15-30"),
+            (31, "31-60"),
+            (60, "31-60"),
+            (61, None),  # beyond the last bucket: excluded
+            (400, None),
+        ],
+    )
+    def test_bucket_edges(
+        self, db_with_route: tuple[TrackerDB, Route], lead_days: int, expected_bucket: str | None
+    ):
+        db, route = db_with_route
+        scanned = date(2026, 3, 1)
+        departure = scanned + timedelta(days=lead_days)
+        db._conn.execute(
+            "INSERT INTO price_snapshots"
+            " (route_id, departure_date, price, currency, scanned_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (route.id, departure.isoformat(), 500.0, "USD", f"{scanned.isoformat()} 12:00:00"),
+        )
+        db._conn.commit()
+
+        buckets = db.get_route_stats(route.id).lead_time_buckets
+
+        if expected_bucket is None:
+            assert buckets == {}
+        else:
+            assert buckets == {expected_bucket: 500.0}
+
+    def test_departed_snapshot_excluded(self, db_with_route: tuple[TrackerDB, Route]):
+        """A departure at or before the scan date contributes to no bucket."""
+        db, route = db_with_route
+        db._conn.execute(
+            "INSERT INTO price_snapshots"
+            " (route_id, departure_date, price, currency, scanned_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (route.id, "2026-03-01", 500.0, "USD", "2026-03-01 12:00:00"),
+        )
+        db._conn.commit()
+
+        assert db.get_route_stats(route.id).lead_time_buckets == {}
+
+    def test_bucket_averages_across_multiple_snapshots(
+        self, db_with_route: tuple[TrackerDB, Route]
+    ):
+        """Each bucket reports the mean of its own snapshots, not a global mean."""
+        db, route = db_with_route
+        scanned = date(2026, 3, 1)
+        rows = [(3, 100.0), (5, 200.0), (40, 900.0)]  # two in 0-7, one in 31-60
+        for lead_days, price in rows:
+            db._conn.execute(
+                "INSERT INTO price_snapshots"
+                " (route_id, departure_date, price, currency, scanned_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    route.id,
+                    (scanned + timedelta(days=lead_days)).isoformat(),
+                    price,
+                    "USD",
+                    f"{scanned.isoformat()} 12:00:00",
+                ),
+            )
+        db._conn.commit()
+
+        buckets = db.get_route_stats(route.id).lead_time_buckets
+
+        assert buckets == {"0-7": 150.0, "31-60": 900.0}
 
 
 # ------------------------------------------------------------------
