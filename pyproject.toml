@@ -78,8 +78,14 @@ packages = ["fli"]
 
 [tool.pytest.ini_options]
 markers = [
-    "parallel: marks tests that can run in parallel"
+    "parallel: marks tests that can run in parallel",
+    "fuzz: property-based tests, gated behind --fuzz or --all",
+    "live_api: drives the live Google Flights API. Excluded from the required CI gate because rate limits and network variance make it non-deterministic. Run with: uv run pytest -m live_api",
 ]
+# strict-markers turns a typo like @pytest.mark.live_apo into an error instead
+# of a silently-created new mark, which would quietly let a live test back into
+# the required gate.
+addopts = "--strict-markers"
 
 [tool.ruff]
 target-version = "py310"

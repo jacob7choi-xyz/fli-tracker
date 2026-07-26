@@ -55,19 +55,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra mcp --extra tracker --locked
 
-      # Excluded by design, not by accident: tests/search and
-      # tests/mcp/test_mcp_server.py drive the LIVE Google Flights API and
-      # fail on rate limits and network variance. A required check that
-      # fails randomly is one the maintainer learns to bypass.
-      # Scoped to the file, not the whole tests/mcp directory:
-      # test_mcp_server_fixes.py holds 12 deterministic tests worth keeping.
-      # Run the excluded ones manually:
-      #   uv run pytest tests/search tests/mcp/test_mcp_server.py
+      # Excluded by design, not by accident. Tests that drive the LIVE
+      # Google Flights API fail on rate limits and network variance, and a
+      # required check that fails randomly is one the maintainer learns to
+      # bypass. They carry @pytest.mark.live_api, so the classification
+      # travels with the test rather than depending on its path: two
+      # earlier path-based exclusions had silently swallowed 24
+      # deterministic tests that happened to sit beside live ones.
+      # strict-markers (pyproject.toml) makes a typo'd marker a collection
+      # error, so a live test cannot rejoin this gate by misspelling.
+      # Run the excluded set manually:  uv run pytest -m live_api
       - name: Run tests
-        run: >
-          uv run pytest tests/
-          --ignore=tests/search
-          --ignore=tests/mcp/test_mcp_server.py
-          -q
+        run: uv run pytest tests/ -m "not live_api" -q
         env:
           FORCE_COLOR: 1

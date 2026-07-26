@@ -87,6 +87,7 @@ def generate_random_test_cases(num_tests: int) -> list[tuple]:
     generate_random_test_cases(num_tests=100),
     ids=generate_test_id,
 )
+@pytest.mark.live_api
 def test_search_fuzz(
     search: SearchFlights,
     dep_airport: Airport,
