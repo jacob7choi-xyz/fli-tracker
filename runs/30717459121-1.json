@@ -1,0 +1,14 @@
+{
+  "attempt_id": "30717459121-1",
+  "collection_status": "complete",
+  "completed_units": 15,
+  "expected_units": 15,
+  "group": "coastal",
+  "row_count": 276,
+  "scheduled_slot": "2026-08-01T20:00Z",
+  "sha256": "89759ef3b7e6dd525eddd6472337c40d4a205117d098dcdd53941aa62938e19f",
+  "shard_path": "archive/date=2026-08-01/group=coastal/run=2026-08-01T20-39-46Z.csv.gz",
+  "sweep_end": "2026-08-01 20:39:49",
+  "sweep_start": "2026-08-01 20:39:46",
+  "trigger": "schedule"
+}
