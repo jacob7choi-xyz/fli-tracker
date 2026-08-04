@@ -1,0 +1,14 @@
+{
+  "attempt_id": "30877078118-1",
+  "collection_status": "complete",
+  "completed_units": 36,
+  "expected_units": 36,
+  "group": "longhaul",
+  "row_count": 1656,
+  "scheduled_slot": "2026-08-04T01:00Z",
+  "sha256": "057a8d1180e5d3968601783827000e94df6824819193316a1f4a795a35fec5b3",
+  "shard_path": "archive/date=2026-08-04/group=longhaul/run=2026-08-04T04-14-23Z.csv.gz",
+  "sweep_end": "2026-08-04 04:14:48",
+  "sweep_start": "2026-08-04 04:14:23",
+  "trigger": "schedule"
+}
