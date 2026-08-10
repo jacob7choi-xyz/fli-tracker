@@ -292,6 +292,10 @@ that a bug in it can never prevent an observation from becoming durable.
 It is also the only repository-native detector for a scheduled sweep that
 produced no run at all. That failure mode leaves no red run, no notification,
 and no manifest, so it is visible only as a hole in the expected-slot grid.
+Detection is retrospective: the grid spans each group's first to last observed
+slot, so a hole appears only once a later slot for that group arrives, at least
+six hours later. The rollup is a provenance record that exposes gaps after the
+fact, not a real-time monitor.
 
 ---
 

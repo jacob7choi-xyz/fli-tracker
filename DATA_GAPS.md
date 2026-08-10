@@ -96,7 +96,12 @@ mechanism provides.
   repository-visible fact, an expected observation that never arrived, and both
   are detectable only by comparing the expected-slot grid against observed
   attempts. Accepted platform-availability residual; the coverage rollup is the
-  detector.
+  detector, and it detects retrospectively rather than in real time. Because
+  the grid spans each group's first to last observed slot, a hole only becomes
+  visible once a later slot for that group arrives and establishes the
+  surrounding schedule. Detection latency is therefore at least one group
+  interval, six hours, and longer if consecutive slots are lost. This is a
+  provenance record that happens to expose gaps, not an uptime monitor.
 - **Parse failure aborts the sweep**: a search response that returns but
   fails parsing stops the sweep loudly (unexpected upstream contract
   drift deserves visibility, not per-unit recovery). Already-collected
