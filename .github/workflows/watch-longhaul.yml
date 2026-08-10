@@ -211,6 +211,7 @@ jobs:
           DATA_DIR: ${{ github.workspace }}/data
           COVERAGE_READY: ${{ steps.coverage.outcome == 'success' }}
           COMMIT_LABEL: longhaul
+          ATTEMPT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           SIMULATE_PUBLISH_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_publish_failure }}
         run: uv run python scripts/publish_tier_b.py
 

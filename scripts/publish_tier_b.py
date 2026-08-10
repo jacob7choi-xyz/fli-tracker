@@ -318,7 +318,21 @@ def main() -> int:
         else:
             staged = assert_staged_allowlist(cwd, paths)
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            git(["commit", "-m", f"Update {label} Tier B ({', '.join(staged)}) {stamp}"], cwd)
+            # The attempt id makes Tier-B state attributable to the run that
+            # produced it. Without it, "did this run publish tracker.db?" can
+            # only be answered by inspecting the branch tip before another of
+            # the 12 daily sweeps lands, which is a timing argument. Archive
+            # commits already carry per-attempt manifests; this gives Tier B
+            # the same property structurally.
+            attempt = os.environ.get("ATTEMPT_ID", "unknown")
+            git(
+                [
+                    "commit",
+                    "-m",
+                    f"Update {label} Tier B ({', '.join(staged)}) attempt {attempt} {stamp}",
+                ],
+                cwd,
+            )
             local_sha = head_sha(cwd)
 
             if os.environ.get("SIMULATE_PUBLISH_FAILURE", "").lower() == "true":

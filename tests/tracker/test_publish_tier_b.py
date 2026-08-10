@@ -401,3 +401,29 @@ class TestPreparationContract:
 
         assert _remote_sha(repo) == base
         assert _remote_file(repo, "tracker.db") == "db-v1"
+
+
+class TestCommitAttribution:
+    def test_commit_message_carries_the_attempt_id(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Tier-B state must be attributable to the run that produced it."""
+        _dirty(repo, "tracker.db", "db-v2")
+        monkeypatch.setenv("COVERAGE_READY", "true")
+        monkeypatch.setenv("ATTEMPT_ID", "31431589160-1")
+
+        assert main() == 0
+
+        subject = _run(["log", "-1", "--format=%s", "data"], repo)
+        assert "attempt 31431589160-1" in subject
+
+    def test_missing_attempt_id_degrades_without_failing(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Attribution is provenance, not a precondition for durability."""
+        _dirty(repo, "tracker.db", "db-v2")
+        monkeypatch.setenv("COVERAGE_READY", "true")
+        monkeypatch.delenv("ATTEMPT_ID", raising=False)
+
+        assert main() == 0
+        assert "attempt unknown" in _run(["log", "-1", "--format=%s", "data"], repo)
