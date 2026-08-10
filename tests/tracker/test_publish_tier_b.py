@@ -90,6 +90,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DATA_DIR", str(work))
     monkeypatch.setenv("PUBLISH_RETRY_SLEEP", "0")
     monkeypatch.setenv("COMMIT_LABEL", "domestic")
+    monkeypatch.setenv("ATTEMPT_ID", "31400000000-1")  # present in normal operation
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.delenv("SIMULATE_PUBLISH_FAILURE", raising=False)
     return work
@@ -417,19 +418,23 @@ class TestCommitAttribution:
         subject = _run(["log", "-1", "--format=%s", "data"], repo)
         assert "attempt 31431589160-1" in subject
 
-    def test_missing_attempt_id_degrades_loudly_without_failing(
+    def test_missing_attempt_id_publishes_but_turns_the_run_red(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ):
         """Attribution is provenance, not a precondition for durability.
 
-        Publication proceeds because Tier B is reconstructible, but the
-        degradation is announced: silently losing the attribution system
-        would be inconsistent with having built it.
+        Publication proceeds because Tier B is reconstructible, but the run
+        must not look healthy: a green run asserts everything important
+        succeeded, and losing attribution means future verification cannot
+        say which run published this state.
         """
         _dirty(repo, "tracker.db", "db-v2")
         monkeypatch.setenv("COVERAGE_READY", "true")
         monkeypatch.delenv("ATTEMPT_ID", raising=False)
 
-        assert main() == 0
-        assert "::warning::ATTEMPT_ID absent" in capsys.readouterr().out
+        # Red, but only AFTER the data is durable: durability first,
+        # visibility second, exactly as for a withheld artifact.
+        assert main() == 1
+        assert "::error::ATTEMPT_ID absent" in capsys.readouterr().out
+        assert _remote_file(repo, "tracker.db") == "db-v2"
         assert "attempt unknown" in _run(["log", "-1", "--format=%s", "data"], repo)

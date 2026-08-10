@@ -275,6 +275,7 @@ def main() -> int:
 
     withheld: list[str] = []
     paths: list[str] = []
+    attribution_degraded = False
 
     # Coverage eligibility comes from the generation step's outcome. A crashed
     # generator can leave a complete-looking partial file, so disk state is not
@@ -326,14 +327,17 @@ def main() -> int:
             # the same property structurally.
             attempt = os.environ.get("ATTEMPT_ID", "")
             if not attempt:
-                # Loud, because this is the attribution system being absent,
-                # not an optional descriptor. Publication still proceeds:
-                # Tier B is reconstructible and provenance must not gate
-                # durability. But silent degradation would be inconsistent
-                # with having built the attribution in the first place.
+                # The attribution system being absent, not an optional
+                # descriptor going unset. Publication proceeds, because
+                # Tier B is reconstructible and provenance must never gate
+                # durability, but the run does NOT get to look healthy: a
+                # green run asserts that everything important succeeded, and
+                # losing attribution means future verification cannot say
+                # which run published this state. Same shape as a withheld
+                # artifact, so it is reported the same way, after publishing.
                 attempt = "unknown"
-                print("::warning::ATTEMPT_ID absent; Tier-B commit attribution degraded")
-                emit("TIER B: attribution degraded (ATTEMPT_ID absent)")
+                attribution_degraded = True
+                print("::error::ATTEMPT_ID absent; Tier-B commit attribution degraded")
             git(
                 [
                     "commit",
@@ -362,12 +366,13 @@ def main() -> int:
         emit(f"TIER B: FAILED CLOSED: {exc}")
         return 1
 
+    if attribution_degraded:
+        emit("TIER B: published, but attribution degraded (ATTEMPT_ID absent)")
     if withheld:
         for reason in withheld:
             print(f"::error::Tier-B artifact withheld: {reason}")
         emit("TIER B: withheld -> " + "; ".join(withheld))
-        return 1
-    return 0
+    return 1 if (withheld or attribution_degraded) else 0
 
 
 if __name__ == "__main__":
