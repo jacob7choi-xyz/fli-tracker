@@ -1,18 +1,58 @@
 """Generate machine-readable collection coverage from the archive tree.
 
 Produces coverage.csv with one row per (group, scheduled slot). This file,
-not prose, is the authoritative provenance record for ML training code:
-it says exactly which collection intervals exist and how trustworthy each
-observation is.
+not prose, is what ML training code should consult: it says exactly which
+collection intervals exist and how trustworthy each observation is. It is
+derived, and the section at the bottom of this docstring names every input
+it is derived from.
 
 Row status vocabulary:
     complete     -- a runs/ record exists and its collection_status is complete
     partial      -- a runs/ record exists and its collection_status is partial
     pre-manifest -- a shard exists but predates per-attempt provenance;
                     completeness is unknown and is NOT guessed
-    missing      -- the slot falls inside the group's live range but no
-                    shard or record exists (e.g. the 2026-06/07 push outage)
+    missing      -- the slot falls inside the group's live range but no shard
+                    or record exists, and the slot is not inside a declared
+                    maintenance window. Covers both "the run failed" and "the
+                    platform never created a run at all"; this file cannot
+                    distinguish those and does not guess
+    maintenance  -- collection was deliberately disabled for this slot, so the
+                    absence is planned rather than a platform or code failure
     backfill     -- a run=backfill shard (day-granularity import, no slot)
+
+This file is DERIVED, not authoritative, and it is derived from two
+different kinds of input:
+
+    Observations (authoritative evidence)
+        archive shards, immutable runs/ manifests
+    Policy and context (authoritative, but operator-declared)
+        the expected schedule in GROUP_OFFSETS, MAINTENANCE_WINDOWS,
+        and the classification rules in this module
+
+Both kinds are load-bearing. A slot reads `maintenance` rather than
+`missing` because of an operator declaration, not because of anything a
+shard says, so a consumer asking "according to what declaration?" is
+asking a fair question. Reproducing a historical coverage.csv therefore
+requires the generator version, not just the archive tree.
+
+Two scope limits worth stating, because neither is enforced by code:
+
+    The expected schedule is single-epoch. GROUP_OFFSETS describes the
+    schedule as it is now and is applied across all of history. That is
+    correct only while the crons have never changed, which is true as of
+    2026-08-10. Changing a cron and updating GROUP_OFFSETS to match would
+    keep every test green while retroactively reinterpreting older slots
+    under the newer schedule. Before the first schedule change, make the
+    expected schedule versioned by epoch and resolve each slot against the
+    schedule that was live at that time.
+
+    The grid is bounded by observation, not by wall clock: it spans each
+    group's first to last observed slot, so a slot that has not arrived yet
+    is not emitted at all and cannot be called missing prematurely. A run
+    delayed past a LATER slot of its own group is the one case that reads
+    missing while still in flight, and it self-corrects on the next
+    regeneration. Per-group slots are 6 hours apart, so that requires a
+    delay exceeding 6 hours.
 
 Multiple attempts for one slot stay separately visible via attempt rows in
 runs/; the slot row counts them in observed_attempts.
@@ -32,8 +72,27 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Cron offsets on the 6-hour grid, one per sweep group
+# Cron offsets on the 6-hour grid, one per sweep group. These MUST match the
+# cron expressions in .github/workflows/watch-*.yml: the expected-slot grid is
+# derived from them, so a schedule change without a matching change here would
+# silently mis-slot the entire historical record. test_generate_coverage.py
+# parses the workflows and asserts they agree.
 GROUP_OFFSETS = {"domestic": 0, "longhaul": 1, "coastal": 2}
+
+# Slots where collection was deliberately off. Absence here is planned, not a
+# failure, and is labeled maintenance so a future reader of this file alone can
+# tell the two apart. Half-open [start, end).
+MAINTENANCE_WINDOWS = [
+    # 2026-07 incident: workflows disabled during remediation, restored 13:05Z.
+    ("2026-07-23T18:00Z", "2026-07-24T13:05Z"),
+]
+
+
+def _in_maintenance(slot: str) -> bool:
+    """Whether a scheduled slot falls inside a declared maintenance window."""
+    return any(start <= slot < end for start, end in MAINTENANCE_WINDOWS)
+
+
 _SHARD_RE = re.compile(
     r"date=(?P<date>[0-9-]+)/group=(?P<group>[a-z]+)/run=(?P<run>[^/]+)\.csv\.gz$"
 )
@@ -136,6 +195,8 @@ def build_coverage(shards: list[dict], manifests: dict[tuple[str, str], list[dic
                 status = "complete" if "complete" in statuses else "partial"
             elif n_shards:
                 status = "pre-manifest"
+            elif _in_maintenance(slot):
+                status = "maintenance"
             else:
                 status = "missing"
             rows.append(

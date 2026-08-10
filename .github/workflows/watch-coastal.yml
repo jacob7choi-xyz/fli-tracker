@@ -10,8 +10,12 @@ on:
         description: "SYNTHETIC FAULT INJECTION: run the sweep with NOTIFY_URL withheld"
         type: boolean
         default: false
-      simulate_db_push_failure:
-        description: "SYNTHETIC FAULT INJECTION: fail the DB push after archive publication"
+      simulate_publish_failure:
+        description: "SYNTHETIC FAULT INJECTION: fail Tier-B publication after archive publication"
+        type: boolean
+        default: false
+      simulate_coverage_failure:
+        description: "SYNTHETIC FAULT INJECTION: fail coverage regeneration after archive publication"
         type: boolean
         default: false
 
@@ -170,74 +174,46 @@ jobs:
             done
           fi
 
-      # tracker.db is non-authoritative operational state (Tier B). Its
-      # push is gated so DB size can never again threaten the archive:
-      # >= 90 MiB refuses the snapshot outright (GitHub rejects at 100 MiB).
-      - name: Push DB snapshot (guarded)
+      # Tier-B preparation. Generation ONLY: this step performs no git
+      # mutation, so a crash here leaves at most a dirty working file and
+      # never a commit. Its step outcome, not the file on disk, decides
+      # whether the rollup may be published: a crashed generator can leave a
+      # complete-looking partial file behind.
+      # The rollup is also the only repository-native detector for a
+      # scheduled slot that produced no run at all, since such an absence
+      # leaves no failed run and no in-job alarm, only a hole in the grid.
+      - name: Regenerate derived coverage rollup
+        id: coverage
         if: always() && steps.push_archive.outcome == 'success'
-        working-directory: data
         env:
-          SIMULATE_DB_PUSH_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_db_push_failure }}
+          ARCHIVE_DIR: ${{ github.workspace }}/data/archive
+          RUNS_DIR: ${{ github.workspace }}/data/runs
+          COVERAGE_OUT: ${{ github.workspace }}/data/coverage.csv
+          SIMULATE_COVERAGE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_coverage_failure }}
         run: |
-          if [ "$SIMULATE_DB_PUSH_FAILURE" = "true" ]; then
-            echo "::error::SYNTHETIC FAULT INJECTION: DB push failed deliberately"
-            {
-              echo "## SYNTHETIC FAULT INJECTION: DB push failure"
-              echo "DATA COLLECTION: SUCCESS"
-              echo "DB SNAPSHOT: FAILED (synthetic)"
-            } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SIMULATE_COVERAGE_FAILURE" = "true" ]; then
+            echo "::error::SYNTHETIC FAULT INJECTION: coverage regeneration failed deliberately"
             exit 1
           fi
-          DB_BYTES=$(stat -c%s tracker.db)
-          WARN_BYTES=$((50 * 1024 * 1024))
-          HARD_BYTES=$((90 * 1024 * 1024))
-          if [ "$DB_BYTES" -ge "$HARD_BYTES" ]; then
-            echo "::error::tracker.db is ${DB_BYTES} bytes (>= 90 MiB safety limit); DB snapshot skipped, archive already durable"
-            {
-              echo "## DB size safety gate"
-              echo "DATA COLLECTION: SUCCESS"
-              echo "DB SNAPSHOT: FAILED SAFELY (size limit)"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          elif [ "$DB_BYTES" -ge "$WARN_BYTES" ]; then
-            echo "::warning::tracker.db is ${DB_BYTES} bytes (>= 50 MiB); investigate growth before the 90 MiB gate"
-            echo "WARNING: tracker.db at ${DB_BYTES} bytes (>= 50 MiB)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          git add tracker.db
-          if git diff --cached --quiet; then
-            echo "No DB changes to commit"
-          else
-            BASE_SHA=$(git rev-parse HEAD)
-            git commit -m "Update coastal prices $(date -u +'%Y-%m-%d %H:%M UTC')"
-            # Same identity-only, fail-closed pattern as the archive push.
-            for attempt in 1 2 3; do
-              git push && break
-              if ! git fetch origin data; then
-                if [ $attempt -eq 3 ]; then
-                  echo "::error::Failed to push DB to data branch after 3 attempts"
-                  exit 1
-                fi
-                echo "Fetch failed; cannot verify remote state, retrying push..."
-                sleep $((attempt * 5))
-                continue
-              fi
-              REMOTE_SHA=$(git rev-parse FETCH_HEAD)
-              if [ "$REMOTE_SHA" = "$(git rev-parse HEAD)" ]; then
-                echo "Remote tip equals local HEAD: the push landed and the response was lost. Published."
-                break
-              fi
-              if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
-                echo "::error::Unexpected remote mutation: data branch tip ${REMOTE_SHA} differs from both this run's starting tip ${BASE_SHA} and its local commit. The serialized-writer contract was violated; refusing automated reconciliation. Investigate before re-running."
-                exit 1
-              fi
-              if [ $attempt -eq 3 ]; then
-                echo "::error::Failed to push DB to data branch after 3 attempts"
-                exit 1
-              fi
-              echo "Remote unmoved; transient push failure, retrying in $((attempt * 5))s..."
-              sleep $((attempt * 5))
-            done
-          fi
+          uv run python scripts/generate_coverage.py
+
+      # Tier-B publication: ONE commit and ONE push, parented on the tip the
+      # archive push verified. Two sequential publishers would share mutable
+      # local branch state, so a failed publisher's commit would ride out on
+      # the next publisher's push and would also corrupt the identity check's
+      # base SHA. Publishing once removes that class entirely. A withheld
+      # artifact turns the run red but never withholds its sibling, and the
+      # shared push fate is a deliberate trade documented in DATA_GAPS.md.
+      # See the module docstring in scripts/publish_tier_b.py.
+      - name: Publish Tier B (tracker.db and coverage rollup)
+        if: always() && steps.push_archive.outcome == 'success'
+        env:
+          DATA_DIR: ${{ github.workspace }}/data
+          COVERAGE_READY: ${{ steps.coverage.outcome == 'success' }}
+          COMMIT_LABEL: coastal
+          ATTEMPT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          SIMULATE_PUBLISH_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_publish_failure }}
+        run: uv run python scripts/publish_tier_b.py
 
       # Best-effort human-reach alarm. The red run is the authoritative
       # signal; for push failures specifically, email is independent (it

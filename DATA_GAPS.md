@@ -1,10 +1,28 @@
 # Data Collection Gaps and Provenance
 
 This document explains known gaps in the price-snapshot archive. The
-authoritative record is `coverage.csv`, generated per slot from the archive
-tree and per-attempt provenance records; the numbers here are a narrative
-snapshot as of 2026-07-23. Training code must consult the CSV, not this
-prose.
+authoritative evidence is the archive shards and the immutable `runs/`
+manifests. `coverage.csv` is a deterministic rollup derived from them, and it
+is the file training code should consult rather than this prose, which is a
+narrative snapshot. The rollup regenerates after every sweep and can be
+rebuilt from the evidence at any time.
+
+The rollup is derived from two kinds of input, and both are load-bearing.
+The observations are the shards and manifests. The policy is the expected
+schedule, the declared maintenance windows, and the classification rules,
+all of which live in the generator. A slot reads `maintenance` rather than
+`missing` because an operator declared a window, not because a shard said
+so, so reproducing a historical rollup needs the generator version too.
+
+**Standing invariant: the expected schedule is single-epoch.** The generator
+applies today's cron schedule across all of history, which is correct only
+while the crons have never changed (true as of 2026-08-10). Changing a cron
+and updating the generator to match would keep every test green while
+retroactively reinterpreting older slots under the newer schedule. Before
+the first schedule change, make the expected schedule versioned by epoch and
+resolve each slot against the schedule live at that time. The existing
+cron-versus-offsets test does not cover this; it compares two present-day
+representations only.
 
 Regenerate at any time from a checkout of the `data` branch:
 
@@ -28,6 +46,34 @@ a higher tier.
 - **Tier C - notifications**: side effects. Configured at runtime via the
   NOTIFY_URL environment variable; failure is surfaced, never allowed to
   gate Tier A or B.
+
+### Tier B publishes in one commit, deliberately
+
+`tracker.db` and `coverage.csv` are published by a single commit and a single
+push (`scripts/publish_tier_b.py`) after the archive is durable. A push failure
+therefore withholds both together. That coupling is a choice, not an oversight,
+and the reasoning should survive the next person who wants to split them.
+
+Both artifacts live on one linear git ref, so two sequential publishers share
+mutable local branch state even where the workflow draws them as independent
+siblings. A publisher whose push fails leaves an unpushed commit that the next
+publisher parents on, which produces two defects: the second push publishes the
+first one's supposedly failed commit, and the first one's commit becomes the
+base SHA that the identity check compares against, so an unmoved remote gets
+misclassified as a violated writer contract. Both were reproduced against real
+repositories before this design was chosen.
+
+Publishing once means there is exactly one post-archive mutation and the
+expected parent is the verified archive tip by construction. What is given up
+is real: two correct independent publishers could land one artifact and fail
+the other. That is acceptable because both are reconstructible, since
+`tracker.db` is rewritten by the next sweep and `coverage.csv` regenerates from
+the archive, while the shard and its manifest are already remotely durable.
+
+The property that is NOT given up: a preparation failure in one artifact never
+withholds the other. A failed rollup still lets the DB publish, and a DB over
+the size gate still lets the rollup publish. Publication of everything valid
+happens first; the non-zero exit that turns the run red happens last.
 
 ## Accepted residual risks
 
@@ -65,6 +111,25 @@ mechanism provides.
   sweep's observations lost (bounded to one sweep, visible). A manual
   push during a live sweep window triggers this by design; re-dispatch
   the sweep after investigating.
+- **Platform pre-execution loss.** A scheduled run can produce no data before
+  any of this repository's code executes, in two distinct ways observed on
+  2026-08-06. In the first, the run was created but no hosted runner was ever
+  acquired, so it was cancelled after 15 minutes with zero steps recorded; the
+  in-job failure email cannot fire in that state because no step runs, leaving
+  a red run as the only signal. In the second, no workflow run was created at
+  all for the expected slot, which leaves no red run, no notification, and no
+  manifest. GitHub documents that scheduled events may be delayed or dropped
+  under high Actions load, which is a plausible explanation, but repository
+  evidence cannot prove the cause for a specific slot. Both reduce to the same
+  repository-visible fact, an expected observation that never arrived, and both
+  are detectable only by comparing the expected-slot grid against observed
+  attempts. Accepted platform-availability residual; the coverage rollup is the
+  detector, and it detects retrospectively rather than in real time. Because
+  the grid spans each group's first to last observed slot, a hole only becomes
+  visible once a later slot for that group arrives and establishes the
+  surrounding schedule. Detection latency is therefore at least one group
+  interval, six hours, and longer if consecutive slots are lost. This is a
+  provenance record that happens to expose gaps, not an uptime monitor.
 - **Parse failure aborts the sweep**: a search response that returns but
   fails parsing stops the sweep loudly (unexpected upstream contract
   drift deserves visibility, not per-unit recovery). Already-collected
@@ -98,6 +163,13 @@ longhaul), 12 per day total once all groups were live.
 | 2026-07-01 to 2026-07-17 | 38 | 120 (whole month) | 24.1% coverage; total failure after 07-17 04:09 UTC |
 | 2026-07-17 to 2026-07-23 | 0 | (in July count) | Workflows disabled 07-23 for remediation |
 
+Since restoration on 2026-07-24T13:05Z: 206 slots collected, 2 missing. Both
+fell on 2026-08-06 and both were platform pre-execution losses rather than code
+failures. The coastal 14:00Z run was created but never acquired a runner. No run
+was created at all for the domestic 18:00Z slot. Slots before 13:05Z on 07-24
+are labeled `maintenance` rather than `missing` because collection was
+deliberately disabled during remediation.
+
 The missing slots are permanently unrecoverable: the data existed only on
 destroyed CI runners.
 
@@ -113,7 +185,13 @@ destroyed CI runners.
   2026-07-23). Completeness is unknown and deliberately not guessed;
   historically some "successful" sweeps silently collected fewer units
   than intended, because the scanner swallows per-search failures.
-- `missing`: no evidence for a slot inside the group's live range.
+- `missing`: no evidence for a slot inside the group's live range, and the
+  slot is not inside a declared maintenance window. Covers both a failed run
+  and a run that was never created; the rollup records the absence and does
+  not guess the cause.
+- `maintenance`: collection was deliberately disabled for this slot, so the
+  absence is planned. Kept distinct from `missing` so a reader of the rollup
+  alone can tell an intentional pause from an unexplained loss.
 - `backfill`: day-granularity import rows from before live sweeps.
 
 Multiple attempts for one slot (re-runs, manual dispatches) remain
