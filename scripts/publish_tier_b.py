@@ -30,6 +30,15 @@ perfectly plausible partial file. Withholding one artifact must not withhold
 the other, so publication of everything valid happens FIRST and the non-zero
 exit reporting withheld artifacts happens LAST.
 
+Eligibility is enforced at two independent levels because they answer
+different questions. ALLOWED_PATHS asks whether an artifact may EVER be
+published by this script; the per-invocation eligible set asks whether it is
+authorized to enter THIS commit. Checking only the former lets a withheld
+artifact be published whenever something upstream happens to have staged it,
+which reports the artifact as withheld and publishes it in the same run. The
+publisher also refuses to start on a dirty index, so authorization cannot be
+smuggled in as inherited state.
+
 Remote identity is verified before staging, not discovered after committing.
 The archive push proved the remote tip at that moment; this is a later moment,
 and an out-of-band writer between the two steps must fail closed rather than
@@ -153,13 +162,46 @@ def stage(cwd: Path, paths: list[str]) -> bool:
     return bool(git(["diff", "--cached", "--name-only"], cwd).stdout.strip())
 
 
-def assert_staged_allowlist(cwd: Path) -> list[str]:
-    """Fail closed if anything outside ALLOWED_PATHS reached the index."""
+def require_clean_index(cwd: Path) -> None:
+    """Refuse to inherit index state this invocation did not create.
+
+    Structural precondition rather than a convention upstream steps must
+    remember forever: anything already staged when the publisher starts would
+    otherwise ride into the Tier-B commit without ever being declared eligible.
+    """
+    staged = git(["diff", "--cached", "--name-only"], cwd).stdout.split()
+    if staged:
+        raise PublishError(
+            f"Refusing to publish: the index already contains {sorted(set(staged))} "
+            "before staging. Tier-B publication requires a clean index so that "
+            "only artifacts declared eligible by this run can be committed."
+        )
+    unmerged = git(["diff", "--name-only", "--diff-filter=U"], cwd).stdout.split()
+    if unmerged:
+        raise PublishError(f"Refusing to publish with unresolved merge paths: {sorted(unmerged)}")
+
+
+def assert_staged_allowlist(cwd: Path, eligible: list[str]) -> list[str]:
+    """Fail closed unless the staged set is exactly this run's eligible set.
+
+    Two distinct authorities, both required. ALLOWED_PATHS is the global
+    capability, meaning an artifact may EVER be published by this script.
+    `eligible` is the per-invocation capability, meaning it is authorized to
+    enter THIS commit because its preparation succeeded. Checking only the
+    global one lets a withheld artifact be published whenever something else
+    put it in the index, which reports withheld and publishes anyway.
+    """
     staged = [p for p in git(["diff", "--cached", "--name-only"], cwd).stdout.splitlines() if p]
     forbidden = sorted(set(staged) - ALLOWED_PATHS)
     if forbidden:
         raise PublishError(
             f"Refusing to commit: staged paths outside the Tier-B allowlist: {forbidden}"
+        )
+    unauthorized = sorted(set(staged) - set(eligible))
+    if unauthorized:
+        raise PublishError(
+            f"Refusing to commit: {unauthorized} staged but not eligible in this run. "
+            "An artifact whose preparation failed must never reach the commit."
         )
     return sorted(staged)
 
@@ -187,18 +229,23 @@ def push_with_identity(
 ) -> PublishResult:
     """Push, classifying every failure by remote identity.
 
-    Returns PUBLISHED on success. REMOTE_UNCHANGED is an intermediate state
-    that drives a retry; returning it means the retries were exhausted with the
-    remote still unmoved, which is a failed publication, not a success.
+    Returns PUBLISHED on success. REMOTE_UNCHANGED is the ONLY classification
+    that authorizes another attempt; returning it means the retries were
+    exhausted with the remote still unmoved, which is a failed publication,
+    not a success.
+
+    UNVERIFIABLE stops immediately rather than retrying. A non-force push
+    could not corrupt an advanced remote, so retrying would be safe in
+    practice, but "unknown is its own state" is the rule this project runs on
+    and a state machine that says one thing while doing another is the defect
+    class that costs the most here.
     """
     result = PublishResult.REMOTE_UNCHANGED
     for attempt in range(1, attempts + 1):
         if git(["push", "origin", "HEAD:data"], cwd, check=False).returncode == 0:
             return PublishResult.PUBLISHED
         result = classify_push(cwd, base_sha, local_sha)
-        if result in (PublishResult.PUBLISHED, PublishResult.UNEXPECTED_REMOTE):
-            return result
-        if result is PublishResult.UNVERIFIABLE and attempt == attempts:
+        if result is not PublishResult.REMOTE_UNCHANGED:
             return result
         if attempt < attempts:
             time.sleep(sleep_seconds * attempt)
@@ -230,6 +277,18 @@ def main() -> int:
     # generator can leave a complete-looking partial file, so disk state is not
     # evidence of success and is deliberately not consulted.
     if coverage_ready:
+        # Declared ready but absent means the preparation contract is
+        # internally inconsistent, so no claim about this run's state can be
+        # trusted. That fails the whole publication rather than degrading to
+        # a partial one; it is a bug in the caller, not an artifact-local
+        # failure the publisher should route around.
+        if not (cwd / "coverage.csv").exists():
+            print(
+                "::error::COVERAGE_READY=true but coverage.csv does not exist. "
+                "Tier-B preparation contract violated; refusing to publish."
+            )
+            emit("TIER B: FAILED CLOSED: preparation contract violated")
+            return 1
         paths.append("coverage.csv")
     else:
         withheld.append("coverage rollup regeneration failed")
@@ -245,13 +304,16 @@ def main() -> int:
 
     try:
         base_sha = head_sha(cwd)
-        # Identity is established BEFORE anything is staged or committed.
+        # Preconditions, established BEFORE anything is staged or committed:
+        # the index carries nothing this run did not put there, and the remote
+        # is still the tip we intend to parent on.
+        require_clean_index(cwd)
         verify_remote_parent(cwd, base_sha)
 
         if not paths or not stage(cwd, paths):
             emit(f"Tier B: nothing to publish ({'; '.join(withheld) or 'no changes'})")
         else:
-            staged = assert_staged_allowlist(cwd)
+            staged = assert_staged_allowlist(cwd, paths)
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             git(["commit", "-m", f"Update {label} Tier B ({', '.join(staged)}) {stamp}"], cwd)
             local_sha = head_sha(cwd)

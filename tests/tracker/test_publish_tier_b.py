@@ -31,6 +31,10 @@ REAL_GIT = shutil.which("git") or "/usr/bin/git"
 SHIM = """#!/bin/sh
 case "$1" in
   push)
+    if [ -n "$PUSH_COUNTER" ]; then
+      pn=$(cat "$PUSH_COUNTER" 2>/dev/null || echo 0)
+      echo "$((pn + 1))" > "$PUSH_COUNTER"
+    fi
     if [ -n "$FOREIGN_PUSH_DIR" ]; then
       "{git}" -C "$FOREIGN_PUSH_DIR" push -q origin HEAD:data
       exit 1
@@ -82,6 +86,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FETCH_COUNTER", str(tmp_path / "fetch_count"))
+    monkeypatch.setenv("PUSH_COUNTER", str(tmp_path / "push_count"))
     monkeypatch.setenv("DATA_DIR", str(work))
     monkeypatch.setenv("PUBLISH_RETRY_SLEEP", "0")
     monkeypatch.setenv("COMMIT_LABEL", "domestic")
@@ -101,6 +106,11 @@ def _remote_file(work: Path, name: str) -> str | None:
 
 def _remote_sha(work: Path) -> str:
     return _run(["--git-dir", str(work.parent / "remote.git"), "rev-parse", "data"], work)
+
+
+def _push_attempts(tmp: Path) -> int:
+    counter = tmp / "push_count"
+    return int(counter.read_text().strip()) if counter.exists() else 0
 
 
 def _dirty(work: Path, name: str, content: str) -> None:
@@ -251,6 +261,11 @@ class TestPushIdentityClassification:
         assert main() == 1
         assert PublishResult.UNVERIFIABLE.value in capsys.readouterr().out
 
+        # The load-bearing assertion: unknown remote state authorizes no
+        # further writes. Retrying would reach the same classification, so
+        # only the attempt count distinguishes the two policies.
+        assert _push_attempts(repo.parent) == 1
+
         assert _remote_sha(repo) == base
 
 
@@ -298,7 +313,7 @@ class TestStagedPathAllowlist:
         _run(["add", "--", "secrets.env"], repo)
 
         with pytest.raises(PublishError, match="outside the Tier-B allowlist"):
-            assert_staged_allowlist(repo)
+            assert_staged_allowlist(repo, ["tracker.db", "coverage.csv"])
 
     def test_allowlist_is_exactly_the_two_tier_b_artifacts(self):
         assert ALLOWED_PATHS == {"tracker.db", "coverage.csv"}
@@ -327,3 +342,62 @@ class TestPublishResultVocabulary:
             "unexpected_remote",
             "unverifiable",
         }
+
+
+class TestInvocationStagingAuthority:
+    """Eligibility is per invocation, not merely per script.
+
+    Membership in ALLOWED_PATHS says an artifact may EVER be published. It
+    says nothing about whether it is authorized to enter THIS commit, which
+    is decided by this invocation's preparation outcomes.
+    """
+
+    def test_prestaged_ineligible_artifact_is_never_published(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _dirty(repo, "coverage.csv", "coverage-UNAUTHORIZED")
+        _run(["add", "--", "coverage.csv"], repo)  # staged by something upstream
+        _dirty(repo, "tracker.db", "db-v2")
+        monkeypatch.setenv("COVERAGE_READY", "false")
+
+        assert main() == 1
+        assert _remote_file(repo, "coverage.csv") == "coverage-v1"
+
+    def test_prestaged_state_is_refused_before_any_commit(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The clean-index precondition, independent of eligibility."""
+        base = _run(["rev-parse", "HEAD"], repo)
+        _dirty(repo, "coverage.csv", "coverage-v2")
+        _run(["add", "--", "coverage.csv"], repo)
+        _dirty(repo, "tracker.db", "db-v2")
+        monkeypatch.setenv("COVERAGE_READY", "true")
+
+        assert main() == 1
+
+        assert _run(["rev-parse", "HEAD"], repo) == base
+        assert _remote_sha(repo) == base
+
+    def test_eligible_subset_is_enforced_not_just_the_global_allowlist(self, repo: Path):
+        """coverage.csv is globally allowed yet unauthorized when ineligible."""
+        _dirty(repo, "coverage.csv", "coverage-v2")
+        _run(["add", "--", "coverage.csv"], repo)
+
+        with pytest.raises(PublishError, match="staged but not eligible"):
+            assert_staged_allowlist(repo, ["tracker.db"])
+
+
+class TestPreparationContract:
+    def test_coverage_ready_but_missing_file_fails_whole_publication(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An inconsistent contract invalidates every claim about this run."""
+        base = _run(["rev-parse", "HEAD"], repo)
+        (repo / "coverage.csv").unlink()
+        _dirty(repo, "tracker.db", "db-v2")
+        monkeypatch.setenv("COVERAGE_READY", "true")
+
+        assert main() == 1
+
+        assert _remote_sha(repo) == base
+        assert _remote_file(repo, "tracker.db") == "db-v1"
