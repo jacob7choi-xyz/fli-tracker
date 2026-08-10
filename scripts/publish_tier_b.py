@@ -324,7 +324,16 @@ def main() -> int:
             # the 12 daily sweeps lands, which is a timing argument. Archive
             # commits already carry per-attempt manifests; this gives Tier B
             # the same property structurally.
-            attempt = os.environ.get("ATTEMPT_ID", "unknown")
+            attempt = os.environ.get("ATTEMPT_ID", "")
+            if not attempt:
+                # Loud, because this is the attribution system being absent,
+                # not an optional descriptor. Publication still proceeds:
+                # Tier B is reconstructible and provenance must not gate
+                # durability. But silent degradation would be inconsistent
+                # with having built the attribution in the first place.
+                attempt = "unknown"
+                print("::warning::ATTEMPT_ID absent; Tier-B commit attribution degraded")
+                emit("TIER B: attribution degraded (ATTEMPT_ID absent)")
             git(
                 [
                     "commit",

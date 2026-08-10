@@ -417,13 +417,19 @@ class TestCommitAttribution:
         subject = _run(["log", "-1", "--format=%s", "data"], repo)
         assert "attempt 31431589160-1" in subject
 
-    def test_missing_attempt_id_degrades_without_failing(
-        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    def test_missing_attempt_id_degrades_loudly_without_failing(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ):
-        """Attribution is provenance, not a precondition for durability."""
+        """Attribution is provenance, not a precondition for durability.
+
+        Publication proceeds because Tier B is reconstructible, but the
+        degradation is announced: silently losing the attribution system
+        would be inconsistent with having built it.
+        """
         _dirty(repo, "tracker.db", "db-v2")
         monkeypatch.setenv("COVERAGE_READY", "true")
         monkeypatch.delenv("ATTEMPT_ID", raising=False)
 
         assert main() == 0
+        assert "::warning::ATTEMPT_ID absent" in capsys.readouterr().out
         assert "attempt unknown" in _run(["log", "-1", "--format=%s", "data"], repo)
