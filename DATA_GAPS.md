@@ -47,6 +47,34 @@ a higher tier.
   NOTIFY_URL environment variable; failure is surfaced, never allowed to
   gate Tier A or B.
 
+### Tier B publishes in one commit, deliberately
+
+`tracker.db` and `coverage.csv` are published by a single commit and a single
+push (`scripts/publish_tier_b.py`) after the archive is durable. A push failure
+therefore withholds both together. That coupling is a choice, not an oversight,
+and the reasoning should survive the next person who wants to split them.
+
+Both artifacts live on one linear git ref, so two sequential publishers share
+mutable local branch state even where the workflow draws them as independent
+siblings. A publisher whose push fails leaves an unpushed commit that the next
+publisher parents on, which produces two defects: the second push publishes the
+first one's supposedly failed commit, and the first one's commit becomes the
+base SHA that the identity check compares against, so an unmoved remote gets
+misclassified as a violated writer contract. Both were reproduced against real
+repositories before this design was chosen.
+
+Publishing once means there is exactly one post-archive mutation and the
+expected parent is the verified archive tip by construction. What is given up
+is real: two correct independent publishers could land one artifact and fail
+the other. That is acceptable because both are reconstructible, since
+`tracker.db` is rewritten by the next sweep and `coverage.csv` regenerates from
+the archive, while the shard and its manifest are already remotely durable.
+
+The property that is NOT given up: a preparation failure in one artifact never
+withholds the other. A failed rollup still lets the DB publish, and a DB over
+the size gate still lets the rollup publish. Publication of everything valid
+happens first; the non-zero exit that turns the run red happens last.
+
 ## Accepted residual risks
 
 Explicitly accepted, none labeled impossible. Each names its mechanism and
