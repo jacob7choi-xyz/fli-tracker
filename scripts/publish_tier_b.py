@@ -182,7 +182,10 @@ def require_clean_index(cwd: Path) -> None:
 
 
 def assert_staged_allowlist(cwd: Path, eligible: list[str]) -> list[str]:
-    """Fail closed unless the staged set is exactly this run's eligible set.
+    """Fail closed unless every staged path is eligible in this invocation.
+
+    Subset, not equality: an eligible artifact whose content did not change
+    stages nothing, which is normal and must not fail the publication.
 
     Two distinct authorities, both required. ALLOWED_PATHS is the global
     capability, meaning an artifact may EVER be published by this script.
