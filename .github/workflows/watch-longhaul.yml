@@ -14,6 +14,10 @@ on:
         description: "SYNTHETIC FAULT INJECTION: fail the DB push after archive publication"
         type: boolean
         default: false
+      simulate_coverage_failure:
+        description: "SYNTHETIC FAULT INJECTION: fail coverage regeneration after archive publication"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -166,6 +170,49 @@ jobs:
                 exit 1
               fi
               echo "Remote unmoved; transient push failure, retrying in $((attempt * 5))s..."
+              sleep $((attempt * 5))
+            done
+          fi
+
+      # Derived rollup, Tier B. Regenerated ONLY after the archive push has
+      # already succeeded, in its own step, so a bug in this generator can
+      # never prevent an observation from becoming durable. That coupling is
+      # exactly what caused the 2026-07 incident, with tracker.db in this
+      # role. If this step fails the shard is already remote and the run
+      # simply goes red.
+      # It is also the only repository-native detector for a scheduled slot
+      # that produced no run at all: such an absence leaves no failed run and
+      # no in-job alarm, only a hole in the expected-slot grid.
+      - name: Regenerate derived coverage rollup
+        if: always() && steps.push_archive.outcome == 'success'
+        working-directory: data
+        env:
+          ARCHIVE_DIR: ${{ github.workspace }}/data/archive
+          RUNS_DIR: ${{ github.workspace }}/data/runs
+          COVERAGE_OUT: ${{ github.workspace }}/data/coverage.csv
+          SIMULATE_COVERAGE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.simulate_coverage_failure }}
+        run: |
+          if [ "$SIMULATE_COVERAGE_FAILURE" = "true" ]; then
+            echo "::error::SYNTHETIC FAULT INJECTION: coverage regeneration failed deliberately"
+            {
+              echo "## SYNTHETIC FAULT INJECTION: coverage failure"
+              echo "ARCHIVE: already durable on the remote"
+              echo "COVERAGE ROLLUP: not updated"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          uv run python "$GITHUB_WORKSPACE/scripts/generate_coverage.py"
+          git add coverage.csv
+          if git diff --cached --quiet; then
+            echo "Coverage rollup unchanged"
+          else
+            git commit -m "Update coverage rollup $(date -u +'%Y-%m-%d %H:%M UTC')"
+            for attempt in 1 2 3; do
+              git push && break
+              if [ $attempt -eq 3 ]; then
+                echo "::error::Failed to push coverage rollup after 3 attempts"
+                exit 1
+              fi
               sleep $((attempt * 5))
             done
           fi

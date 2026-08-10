@@ -1,10 +1,11 @@
 # Data Collection Gaps and Provenance
 
 This document explains known gaps in the price-snapshot archive. The
-authoritative record is `coverage.csv`, generated per slot from the archive
-tree and per-attempt provenance records; the numbers here are a narrative
-snapshot as of 2026-07-23. Training code must consult the CSV, not this
-prose.
+authoritative evidence is the archive shards and the immutable `runs/`
+manifests. `coverage.csv` is a deterministic rollup derived from them, and it
+is the file training code should consult rather than this prose, which is a
+narrative snapshot. The rollup regenerates after every sweep and can be
+rebuilt from the evidence at any time.
 
 Regenerate at any time from a checkout of the `data` branch:
 
@@ -65,6 +66,20 @@ mechanism provides.
   sweep's observations lost (bounded to one sweep, visible). A manual
   push during a live sweep window triggers this by design; re-dispatch
   the sweep after investigating.
+- **Platform pre-execution loss.** A scheduled run can produce no data before
+  any of this repository's code executes, in two distinct ways observed on
+  2026-08-06. In the first, the run was created but no hosted runner was ever
+  acquired, so it was cancelled after 15 minutes with zero steps recorded; the
+  in-job failure email cannot fire in that state because no step runs, leaving
+  a red run as the only signal. In the second, no workflow run was created at
+  all for the expected slot, which leaves no red run, no notification, and no
+  manifest. GitHub documents that scheduled events may be delayed or dropped
+  under high Actions load, which is a plausible explanation, but repository
+  evidence cannot prove the cause for a specific slot. Both reduce to the same
+  repository-visible fact, an expected observation that never arrived, and both
+  are detectable only by comparing the expected-slot grid against observed
+  attempts. Accepted platform-availability residual; the coverage rollup is the
+  detector.
 - **Parse failure aborts the sweep**: a search response that returns but
   fails parsing stops the sweep loudly (unexpected upstream contract
   drift deserves visibility, not per-unit recovery). Already-collected
@@ -98,6 +113,13 @@ longhaul), 12 per day total once all groups were live.
 | 2026-07-01 to 2026-07-17 | 38 | 120 (whole month) | 24.1% coverage; total failure after 07-17 04:09 UTC |
 | 2026-07-17 to 2026-07-23 | 0 | (in July count) | Workflows disabled 07-23 for remediation |
 
+Since restoration on 2026-07-24T13:05Z: 206 slots collected, 2 missing. Both
+fell on 2026-08-06 and both were platform pre-execution losses rather than code
+failures. The coastal 14:00Z run was created but never acquired a runner. No run
+was created at all for the domestic 18:00Z slot. Slots before 13:05Z on 07-24
+are labeled `maintenance` rather than `missing` because collection was
+deliberately disabled during remediation.
+
 The missing slots are permanently unrecoverable: the data existed only on
 destroyed CI runners.
 
@@ -113,7 +135,13 @@ destroyed CI runners.
   2026-07-23). Completeness is unknown and deliberately not guessed;
   historically some "successful" sweeps silently collected fewer units
   than intended, because the scanner swallows per-search failures.
-- `missing`: no evidence for a slot inside the group's live range.
+- `missing`: no evidence for a slot inside the group's live range, and the
+  slot is not inside a declared maintenance window. Covers both a failed run
+  and a run that was never created; the rollup records the absence and does
+  not guess the cause.
+- `maintenance`: collection was deliberately disabled for this slot, so the
+  absence is planned. Kept distinct from `missing` so a reader of the rollup
+  alone can tell an intentional pause from an unexplained loss.
 - `backfill`: day-granularity import rows from before live sweeps.
 
 Multiple attempts for one slot (re-runs, manual dispatches) remain

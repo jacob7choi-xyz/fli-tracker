@@ -273,14 +273,25 @@ Observations are persisted to a dedicated `data` branch:
 ```
 archive/date=2026-07-25/group=domestic/run=2026-07-25T12-55-31Z.csv.gz   # Tier A
 runs/30094859362-1.json                                                  # provenance
-coverage.csv                                                             # per-slot completeness
+coverage.csv                                                             # derived rollup
 tracker.db                                                               # Tier B
 ```
 
 `coverage.csv` records every scheduled slot as `complete`, `partial`,
-`pre-manifest`, `missing`, or `backfill`, so downstream analysis can weight
-windows by trustworthiness instead of assuming uniform quality, including across
-the June and July gap.
+`pre-manifest`, `missing`, `maintenance`, or `backfill`, so downstream analysis
+can weight windows by trustworthiness instead of assuming uniform quality,
+including across the June and July gap. It is regenerated after every sweep.
+
+It is **derived, not authoritative.** The evidence is the archive shards and the
+immutable `runs/` manifests; the rollup is a deterministic materialization of
+them and can be rebuilt at any time with `scripts/generate_coverage.py`. It is
+the canonical interface for consumers, not the source of truth, and it is
+regenerated in its own step only after the archive push has already succeeded so
+that a bug in it can never prevent an observation from becoming durable.
+
+It is also the only repository-native detector for a scheduled sweep that
+produced no run at all. That failure mode leaves no red run, no notification,
+and no manifest, so it is visible only as a hole in the expected-slot grid.
 
 ---
 

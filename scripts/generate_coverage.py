@@ -10,9 +10,18 @@ Row status vocabulary:
     partial      -- a runs/ record exists and its collection_status is partial
     pre-manifest -- a shard exists but predates per-attempt provenance;
                     completeness is unknown and is NOT guessed
-    missing      -- the slot falls inside the group's live range but no
-                    shard or record exists (e.g. the 2026-06/07 push outage)
+    missing      -- the slot falls inside the group's live range but no shard
+                    or record exists, and the slot is not inside a declared
+                    maintenance window. Covers both "the run failed" and "the
+                    platform never created a run at all"; this file cannot
+                    distinguish those and does not guess
+    maintenance  -- collection was deliberately disabled for this slot, so the
+                    absence is planned rather than a platform or code failure
     backfill     -- a run=backfill shard (day-granularity import, no slot)
+
+This file is DERIVED, not authoritative. The evidence is the archive shards
+and the immutable runs/ manifests; coverage.csv is a deterministic
+materialization of them and can be rebuilt at any time.
 
 Multiple attempts for one slot stay separately visible via attempt rows in
 runs/; the slot row counts them in observed_attempts.
@@ -32,8 +41,27 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Cron offsets on the 6-hour grid, one per sweep group
+# Cron offsets on the 6-hour grid, one per sweep group. These MUST match the
+# cron expressions in .github/workflows/watch-*.yml: the expected-slot grid is
+# derived from them, so a schedule change without a matching change here would
+# silently mis-slot the entire historical record. test_generate_coverage.py
+# parses the workflows and asserts they agree.
 GROUP_OFFSETS = {"domestic": 0, "longhaul": 1, "coastal": 2}
+
+# Slots where collection was deliberately off. Absence here is planned, not a
+# failure, and is labeled maintenance so a future reader of this file alone can
+# tell the two apart. Half-open [start, end).
+MAINTENANCE_WINDOWS = [
+    # 2026-07 incident: workflows disabled during remediation, restored 13:05Z.
+    ("2026-07-23T18:00Z", "2026-07-24T13:05Z"),
+]
+
+
+def _in_maintenance(slot: str) -> bool:
+    """Whether a scheduled slot falls inside a declared maintenance window."""
+    return any(start <= slot < end for start, end in MAINTENANCE_WINDOWS)
+
+
 _SHARD_RE = re.compile(
     r"date=(?P<date>[0-9-]+)/group=(?P<group>[a-z]+)/run=(?P<run>[^/]+)\.csv\.gz$"
 )
@@ -136,6 +164,8 @@ def build_coverage(shards: list[dict], manifests: dict[tuple[str, str], list[dic
                 status = "complete" if "complete" in statuses else "partial"
             elif n_shards:
                 status = "pre-manifest"
+            elif _in_maintenance(slot):
+                status = "maintenance"
             else:
                 status = "missing"
             rows.append(
