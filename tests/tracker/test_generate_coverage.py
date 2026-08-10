@@ -109,9 +109,16 @@ class TestBuildCoverage:
 class TestScheduleModelMatchesWorkflows:
     """Guard the coupling between GROUP_OFFSETS and the workflow crons.
 
-    The expected-slot grid is derived from GROUP_OFFSETS, so a schedule change
-    without a matching generator change would silently mis-slot every
-    historical row, which is worse than a stale file.
+    Scope, stated precisely because it is narrower than it looks: this proves
+    the current crons agree with the current offsets. It catches drift between
+    two present-day representations, such as editing a cron and forgetting the
+    generator.
+
+    It does NOT protect history. Editing a cron AND updating GROUP_OFFSETS
+    leaves this test green while the new schedule is applied retroactively to
+    older slots. That requires a schedule-epoch model, which is deliberately
+    not built yet because no cron has ever changed. See the scope limits in
+    scripts/generate_coverage.py.
     """
 
     def test_offsets_match_workflow_crons(self):

@@ -1,9 +1,10 @@
 """Generate machine-readable collection coverage from the archive tree.
 
 Produces coverage.csv with one row per (group, scheduled slot). This file,
-not prose, is the authoritative provenance record for ML training code:
-it says exactly which collection intervals exist and how trustworthy each
-observation is.
+not prose, is what ML training code should consult: it says exactly which
+collection intervals exist and how trustworthy each observation is. It is
+derived, and the section at the bottom of this docstring names every input
+it is derived from.
 
 Row status vocabulary:
     complete     -- a runs/ record exists and its collection_status is complete
@@ -19,9 +20,39 @@ Row status vocabulary:
                     absence is planned rather than a platform or code failure
     backfill     -- a run=backfill shard (day-granularity import, no slot)
 
-This file is DERIVED, not authoritative. The evidence is the archive shards
-and the immutable runs/ manifests; coverage.csv is a deterministic
-materialization of them and can be rebuilt at any time.
+This file is DERIVED, not authoritative, and it is derived from two
+different kinds of input:
+
+    Observations (authoritative evidence)
+        archive shards, immutable runs/ manifests
+    Policy and context (authoritative, but operator-declared)
+        the expected schedule in GROUP_OFFSETS, MAINTENANCE_WINDOWS,
+        and the classification rules in this module
+
+Both kinds are load-bearing. A slot reads `maintenance` rather than
+`missing` because of an operator declaration, not because of anything a
+shard says, so a consumer asking "according to what declaration?" is
+asking a fair question. Reproducing a historical coverage.csv therefore
+requires the generator version, not just the archive tree.
+
+Two scope limits worth stating, because neither is enforced by code:
+
+    The expected schedule is single-epoch. GROUP_OFFSETS describes the
+    schedule as it is now and is applied across all of history. That is
+    correct only while the crons have never changed, which is true as of
+    2026-08-10. Changing a cron and updating GROUP_OFFSETS to match would
+    keep every test green while retroactively reinterpreting older slots
+    under the newer schedule. Before the first schedule change, make the
+    expected schedule versioned by epoch and resolve each slot against the
+    schedule that was live at that time.
+
+    The grid is bounded by observation, not by wall clock: it spans each
+    group's first to last observed slot, so a slot that has not arrived yet
+    is not emitted at all and cannot be called missing prematurely. A run
+    delayed past a LATER slot of its own group is the one case that reads
+    missing while still in flight, and it self-corrects on the next
+    regeneration. Per-group slots are 6 hours apart, so that requires a
+    delay exceeding 6 hours.
 
 Multiple attempts for one slot stay separately visible via attempt rows in
 runs/; the slot row counts them in observed_attempts.

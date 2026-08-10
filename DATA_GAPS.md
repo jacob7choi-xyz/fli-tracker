@@ -7,6 +7,23 @@ is the file training code should consult rather than this prose, which is a
 narrative snapshot. The rollup regenerates after every sweep and can be
 rebuilt from the evidence at any time.
 
+The rollup is derived from two kinds of input, and both are load-bearing.
+The observations are the shards and manifests. The policy is the expected
+schedule, the declared maintenance windows, and the classification rules,
+all of which live in the generator. A slot reads `maintenance` rather than
+`missing` because an operator declared a window, not because a shard said
+so, so reproducing a historical rollup needs the generator version too.
+
+**Standing invariant: the expected schedule is single-epoch.** The generator
+applies today's cron schedule across all of history, which is correct only
+while the crons have never changed (true as of 2026-08-10). Changing a cron
+and updating the generator to match would keep every test green while
+retroactively reinterpreting older slots under the newer schedule. Before
+the first schedule change, make the expected schedule versioned by epoch and
+resolve each slot against the schedule live at that time. The existing
+cron-versus-offsets test does not cover this; it compares two present-day
+representations only.
+
 Regenerate at any time from a checkout of the `data` branch:
 
     ARCHIVE_DIR=data/archive RUNS_DIR=data/runs COVERAGE_OUT=coverage.csv \
