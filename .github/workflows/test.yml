@@ -72,3 +72,45 @@ jobs:
         run: uv run pytest tests/ -m "not live_api" -q
         env:
           FORCE_COLOR: 1
+
+  # Boundary coverage for the declared support range. Kept SEPARATE from the
+  # `test` job on purpose: `test` is a required status check, and a matrix
+  # renames its checks to "test (3.11)" and so on, so the required `test`
+  # would never report again and every PR would block forever.
+  #
+  # This exists because requires-python was a claim nobody verified. It said
+  # >= 3.10 while fli/tracker/models.py imported StrEnum (3.11+), so the
+  # tracker could not import on the version the package advertised. Testing
+  # the ends of the range makes the metadata a checked property instead of a
+  # comment.
+  test-versions:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]  # floor and ceiling; 3.12 is the `test` job
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.3"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra mcp --extra tracker --locked
+
+      # Importing the tracker is the specific thing 3.10 could not do.
+      - name: Verify the package imports on this version
+        run: uv run python -c "import fli.tracker.models, fli.tracker.scanner, fli.cli.main"
+
+      - name: Run tests
+        run: uv run pytest tests/ -m "not live_api" -q
+        env:
+          FORCE_COLOR: 1
