@@ -61,7 +61,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -318,7 +318,7 @@ def main() -> int:
             emit(f"Tier B: nothing to publish ({'; '.join(withheld) or 'no changes'})")
         else:
             staged = assert_staged_allowlist(cwd, paths)
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
             # The attempt id makes Tier-B state attributable to the run that
             # produced it. Without it, "did this run publish tracker.db?" can
             # only be answered by inspecting the branch tip before another of

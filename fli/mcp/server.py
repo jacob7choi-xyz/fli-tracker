@@ -7,7 +7,7 @@ travel dates.
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -565,7 +565,7 @@ def search_direct_flight_prompt(
     prefer_non_stop: bool = True,
 ) -> str:
     """Create a helper prompt to guide flight searches."""
-    travel_date = date or datetime.now(timezone.utc).date().isoformat()
+    travel_date = date or datetime.now(UTC).date().isoformat()
     max_stops_hint = "NON_STOP" if prefer_non_stop else "ANY"
     return (
         "Use the `search_flights` tool to look for flights from "
@@ -586,7 +586,7 @@ def find_budget_window_prompt(
     duration: int = 7,
 ) -> str:
     """Create a helper prompt to guide flexible date searches."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     travel_start = start_date or (today + timedelta(days=30)).isoformat()
     travel_end = end_date or (today + timedelta(days=90)).isoformat()
     return (
