@@ -1,0 +1,14 @@
+{
+  "attempt_id": "31985965441-1",
+  "collection_status": "complete",
+  "completed_units": 75,
+  "expected_units": 75,
+  "group": "domestic",
+  "row_count": 0,
+  "scheduled_slot": "2026-08-17T00:00Z",
+  "sha256": null,
+  "shard_path": null,
+  "sweep_end": "2026-08-17 01:47:10",
+  "sweep_start": "2026-08-17 01:47:01",
+  "trigger": "schedule"
+}
