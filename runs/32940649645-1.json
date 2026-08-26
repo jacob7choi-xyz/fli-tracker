@@ -1,0 +1,14 @@
+{
+  "attempt_id": "32940649645-1",
+  "collection_status": "complete",
+  "completed_units": 75,
+  "expected_units": 75,
+  "group": "domestic",
+  "row_count": 3404,
+  "scheduled_slot": "2026-08-26T06:00Z",
+  "sha256": "971be49f3e0fa056f1154c2d590eea9b445493a14926cd6b4d43edf742d6b1e0",
+  "shard_path": "archive/date=2026-08-26/group=domestic/run=2026-08-26T07-00-23Z.csv.gz",
+  "sweep_end": "2026-08-26 07:00:49",
+  "sweep_start": "2026-08-26 07:00:23",
+  "trigger": "schedule"
+}
