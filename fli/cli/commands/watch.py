@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from typing import Annotated
 
 import typer
@@ -14,6 +15,41 @@ from fli.tracker.regions import RouteGroup, route_group
 from fli.tracker.scanner import ScanStats, route_units, scan_route
 
 logger = logging.getLogger(__name__)
+
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Mask email addresses in the fully formatted line, tracebacks included.
+
+    The sweeps run `fli watch --verbose` in a public repository, so every log
+    line is world-readable. Apprise logs "Sent Email to <recipient>", and the
+    recipient is derived from NOTIFY_URL; GitHub masks only the exact secret
+    string. Redacting the final string covers every logger, every level, and
+    exception text, without trusting third-party log call sites.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format the record, then replace anything shaped like an address."""
+        return _EMAIL_RE.sub("<redacted-email>", super().format(record))
+
+
+def _configure_logging(stream=None) -> logging.Handler:
+    """Attach the --verbose log handler to the root logger at INFO.
+
+    Apprise is held at WARNING: its INFO lines describe delivery targets,
+    which may be identifiers the email pattern does not recognize if
+    NOTIFY_URL ever points at a non-email service. fli's own
+    "Digest sent: N alerts" remains the delivery signal.
+    """
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(_RedactingFormatter("%(levelname)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    logging.getLogger("apprise").setLevel(logging.WARNING)
+    return handler
 
 
 def _send_digest_contained(triggers, db) -> tuple[int, str | None]:
@@ -93,7 +129,7 @@ def watch(
     group_filter: RouteGroup | None = group  # type: ignore[assignment]
 
     if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+        _configure_logging()
 
     db = TrackerDB()
     try:
