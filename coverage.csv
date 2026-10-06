@@ -1264,7 +1264,7 @@ domestic,2026-10-05T18:00Z,0,missing
 domestic,2026-10-06T00:00Z,0,missing
 domestic,2026-10-06T06:00Z,1,complete
 domestic,2026-10-06T12:00Z,0,missing
-domestic,2026-10-06T18:00Z,2,complete
+domestic,2026-10-06T18:00Z,3,complete
 longhaul,2026-04-12(day),1,backfill
 longhaul,2026-04-13(day),1,backfill
 longhaul,2026-04-14(day),1,backfill
