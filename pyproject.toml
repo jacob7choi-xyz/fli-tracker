@@ -79,7 +79,7 @@ packages = ["fli"]
 markers = [
     "parallel: marks tests that can run in parallel",
     "fuzz: property-based tests, gated behind --fuzz or --all",
-    "live_api: drives the live Google Flights API. Excluded from the required CI gate because rate limits and network variance make it non-deterministic. Run with: uv run pytest -m live_api",
+    "live_api: drives the live Google Flights API. Excluded from the required CI gate because rate limits and network variance make it non-deterministic. Run with: uv run pytest -m live_api --all (--all is required because conftest drops fuzz tests without it)",
 ]
 # strict-markers turns a typo like @pytest.mark.live_apo into an error instead
 # of a silently-created new mark, which would quietly let a live test back into
