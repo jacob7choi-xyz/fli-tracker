@@ -80,6 +80,34 @@ class TestExportShard:
         assert count == 0
         assert not (tmp_path / "archive").exists()
 
+    @pytest.mark.parametrize(
+        ("scanned_at", "sweep_start", "sweep_end", "expected"),
+        [
+            # The 2026-10 defect: SWEEP_END is captured with second precision
+            # after the sweep, so rows written during that same second share
+            # its timestamp. They belong to this sweep and must be exported.
+            ("2026-07-24 06:05:00", "2026-07-24 06:00:00", "2026-07-24 06:05:00", 3),
+            # A whole sweep inside one wall-clock second. Production sweeps have
+            # been observed finishing in 2 seconds (coastal, 2026-09-26).
+            ("2026-07-24 06:05:00", "2026-07-24 06:05:00", "2026-07-24 06:05:00", 3),
+            # Lower bound stays inclusive.
+            ("2026-07-24 06:00:00", "2026-07-24 06:00:00", "2026-07-24 06:05:00", 3),
+            # Rows outside the window on either side stay excluded.
+            ("2026-07-24 06:05:01", "2026-07-24 06:00:00", "2026-07-24 06:05:00", 0),
+            ("2026-07-24 05:59:59", "2026-07-24 06:00:00", "2026-07-24 06:05:00", 0),
+        ],
+    )
+    def test_window_is_closed_at_second_precision(
+        self, seeded_db, scanned_at, sweep_start, sweep_end, expected
+    ):
+        db, tmp_path = seeded_db
+        db._conn.execute("UPDATE price_snapshots SET scanned_at = ?", (scanned_at,))
+        db._conn.commit()
+        _, count = export_mod.export_shard(
+            str(tmp_path / "test.db"), tmp_path / "archive", "domestic", sweep_start, sweep_end
+        )
+        assert count == expected
+
 
 class TestScheduledSlot:
     @pytest.mark.parametrize(

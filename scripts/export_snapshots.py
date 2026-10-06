@@ -11,7 +11,13 @@ Environment variables:
     ARCHIVE_DIR  -- root directory for archive files
     SWEEP_GROUP  -- route group: domestic, coastal, or longhaul
     SWEEP_START  -- inclusive lower bound, SQLite UTC format: YYYY-MM-DD HH:MM:SS
-    SWEEP_END    -- exclusive upper bound, SQLite UTC format: YYYY-MM-DD HH:MM:SS
+    SWEEP_END    -- inclusive upper bound, SQLite UTC format: YYYY-MM-DD HH:MM:SS.
+                    Inclusive because both SWEEP_END and scanned_at are
+                    truncated to the second: rows written during the second
+                    SWEEP_END was captured carry exactly that timestamp. An
+                    exclusive bound dropped them (2026-05-07 to 2026-10).
+                    Safe because the sweep is the only writer and nothing
+                    writes between "Record sweep end" and this export.
 
 Provenance (the manifest is skipped unless RUNS_DIR is set; when RUNS_DIR
 is set, RUN_ID becomes REQUIRED -- attempt identity is never fabricated):
@@ -60,7 +66,7 @@ def export_shard(
         """
         SELECT route_id, scanned_at, departure_date, return_date, price, currency
         FROM price_snapshots
-        WHERE scanned_at >= ? AND scanned_at < ?
+        WHERE scanned_at >= ? AND scanned_at <= ?
         ORDER BY scanned_at, route_id, departure_date
         """,
         (sweep_start, sweep_end),
@@ -193,7 +199,7 @@ def main() -> None:
 
     shard, row_count = export_shard(db_path, archive_dir, group, sweep_start, sweep_end)
     if shard is None:
-        print(f"No snapshots in [{sweep_start}, {sweep_end}) -- nothing to archive")
+        print(f"No snapshots in [{sweep_start}, {sweep_end}] -- nothing to archive")
     else:
         print(f"Archived {row_count} snapshots -> {shard}")
 
