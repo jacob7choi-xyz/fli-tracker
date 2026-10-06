@@ -287,7 +287,7 @@ Then restart the terminal.
 
 ### Python version problems
 
-Fli requires Python 3.10 or newer.
+Fli requires Python 3.11 or newer.
 
 Check with:
 
